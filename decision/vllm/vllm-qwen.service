@@ -1,0 +1,21 @@
+[Unit]
+Description=vLLM Qwen3.5-9B NVFP4 (GPU 0, 172.17.0.1:4002)
+# 监听 docker0 网关地址，须在 docker 建好网桥之后启动
+Wants=docker.service network-online.target
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+User=david
+Group=david
+WorkingDirectory=/mnt/storage/vllm
+# 编译缓存（torch inductor / flashinfer / vllm）放在服务目录内
+Environment=XDG_CACHE_HOME=/mnt/storage/vllm/cache
+Environment=TORCHINDUCTOR_CACHE_DIR=/mnt/storage/vllm/cache/torchinductor
+ExecStart=/mnt/storage/vllm/serve.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

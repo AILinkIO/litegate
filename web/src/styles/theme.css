@@ -1,0 +1,141 @@
+/* 主题变量：取自 magpie 的配色（浅灰底、白卡片、细边框、单一靛蓝重点色），映射到 shadcn/ui 的变量名。
+   success / warning 与各状态的浅底（*-soft）、7 色图表色板为 LiteGate 增加的变量，ECharts 也从这里读色。 */
+:root {
+  --radius: 0.625rem;
+  --background: #f4f4f6;
+  --foreground: #1c1c21;
+  --card: #ffffff;
+  --card-foreground: #1c1c21;
+  --popover: #ffffff;
+  --popover-foreground: #1c1c21;
+  --primary: #4f46e5;
+  --primary-foreground: #ffffff;
+  --primary-soft: #eeedfd;
+  --secondary: #f1f1f4;
+  --secondary-foreground: #1c1c21;
+  --muted: #f1f1f4;
+  --muted-foreground: #85858d;
+  --subtle-foreground: #4b4b53;
+  --accent: #e9e9ee;
+  --accent-foreground: #1c1c21;
+  --destructive: #d64545;
+  --destructive-soft: #fbe9e9;
+  --success: #189a58;
+  --success-soft: #e4f6ec;
+  --warning: #b45309;
+  --warning-soft: #fbf0df;
+  --border: #e3e3e8;
+  --input: #e3e3e8;
+  --ring: #a5b4fc;
+  --chart-1: #4f46e5;
+  --chart-2: #0ea5e9;
+  --chart-3: #10b981;
+  --chart-4: #f59e0b;
+  --chart-5: #ec4899;
+  --chart-6: #8b5cf6;
+  --chart-7: #64748b;
+
+  --sidebar: #f4f4f6;
+  --sidebar-foreground: #1c1c21;
+  --sidebar-primary: #4f46e5;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e9e9ee;
+  --sidebar-accent-foreground: #1c1c21;
+  --sidebar-border: #e3e3e8;
+  --sidebar-ring: #a5b4fc;
+}
+
+.dark {
+  --background: #1a1a1e;
+  --foreground: #ededf1;
+  --card: #232327;
+  --card-foreground: #ededf1;
+  --popover: #26262b;
+  --popover-foreground: #ededf1;
+  --primary: #a5b4fc;
+  --primary-foreground: #14142a;
+  --primary-soft: #2b2c47;
+  --secondary: #2d2d33;
+  --secondary-foreground: #ededf1;
+  --muted: #2d2d33;
+  --muted-foreground: #8b8b94;
+  --subtle-foreground: #b9b9c1;
+  --accent: #36363d;
+  --accent-foreground: #ededf1;
+  --destructive: #f28b82;
+  --destructive-soft: #45272a;
+  --success: #6fd99b;
+  --success-soft: #1e3a2b;
+  --warning: #f2b544;
+  --warning-soft: #3f3220;
+  --border: #333339;
+  --input: #3a3a41;
+  --ring: #6366f1;
+  --chart-1: #a5b4fc;
+  --chart-2: #7dd3fc;
+  --chart-3: #6ee7b7;
+  --chart-4: #fcd34d;
+  --chart-5: #f9a8d4;
+  --chart-6: #c4b5fd;
+  --chart-7: #94a3b8;
+
+  --sidebar: #1a1a1e;
+  --sidebar-foreground: #ededf1;
+  --sidebar-primary: #a5b4fc;
+  --sidebar-primary-foreground: #14142a;
+  --sidebar-accent: #2d2d33;
+  --sidebar-accent-foreground: #ededf1;
+  --sidebar-border: #333339;
+  --sidebar-ring: #6366f1;
+}
+
+@theme inline {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI',
+    'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Cascadia Mono', monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}

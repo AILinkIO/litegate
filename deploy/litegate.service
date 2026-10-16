@@ -1,0 +1,41 @@
+# LiteGate systemd 服务
+# 安装步骤见 docs/deploy.md
+[Unit]
+Description=LiteGate LLM gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=litegate
+Group=litegate
+WorkingDirectory=/var/lib/litegate
+
+# 数据目录（mnesia + bitcask + secret.key），由 systemd 创建并归属 litegate 用户
+StateDirectory=litegate
+Environment=LITEGATE_DATA_DIR=/var/lib/litegate
+# Erlang cookie 存放在 $HOME/.erlang.cookie（首次启动自动生成）
+Environment=HOME=/var/lib/litegate
+# epmd 只监听本机；分布式端口已在 vm.args 中限定为 127.0.0.1
+Environment=ERL_EPMD_ADDRESS=127.0.0.1
+Environment=ERL_CRASH_DUMP=/var/lib/litegate/erl_crash.dump
+# crash dump 上限 20MB：故障时的 dump 不至于撑满磁盘
+Environment=ERL_CRASH_DUMP_BYTES=20000000
+# 其余配置（主密钥、端口等）
+EnvironmentFile=-/etc/litegate/litegate.env
+
+ExecStart=/opt/litegate/bin/litegate foreground
+ExecStop=/opt/litegate/bin/litegate stop
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=65536
+
+# 加固
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

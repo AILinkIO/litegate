@@ -1,0 +1,9 @@
+{application, lg_catalog, [
+    {description, "LiteGate model catalog: models.dev sync + user overlay"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {lg_catalog_app, []}},
+    {applications, [kernel, stdlib, inets, ssl, public_key, lg_core]},
+    {env, []},
+    {licenses, ["Apache-2.0"]}
+]}.

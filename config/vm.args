@@ -1,0 +1,9 @@
+## 固定节点名：mnesia 的磁盘 schema 与节点名绑定，使用 127.0.0.1 避免主机名变化导致数据库无法打开
+-name litegate@127.0.0.1
+
+## cookie 不写死：取自 $HOME/.erlang.cookie（首次启动自动生成随机值）
+## 分布式端口只监听本机（epmd 由 ERL_EPMD_ADDRESS=127.0.0.1 限定，见 deploy/litegate.service）
+-kernel inet_dist_use_interface {127,0,0,1}
+
++K true
++A 30

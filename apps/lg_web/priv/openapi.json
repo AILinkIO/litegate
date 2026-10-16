@@ -1,0 +1,3817 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "LiteGate API",
+  "version": "0.1.0",
+  "description": "LiteGate LLM 网关：/v1/* 为网关接口（网关 API Key），/api/* 为控制台管理接口（控制台会话；未开启登录时无需鉴权）。"
+ },
+ "tags": [
+  {
+   "name": "网关"
+  },
+  {
+   "name": "Playground"
+  },
+  {
+   "name": "认证"
+  },
+  {
+   "name": "概览"
+  },
+  {
+   "name": "模型目录"
+  },
+  {
+   "name": "上游凭证"
+  },
+  {
+   "name": "路由表"
+  },
+  {
+   "name": "API Key"
+  },
+  {
+   "name": "限额与预算"
+  },
+  {
+   "name": "日志与用量"
+  },
+  {
+   "name": "上游健康"
+  },
+  {
+   "name": "订阅套餐"
+  },
+  {
+   "name": "告警"
+  },
+  {
+   "name": "运行参数与存储"
+  },
+  {
+   "name": "配置备份"
+  },
+  {
+   "name": "用户"
+  },
+  {
+   "name": "运维"
+  }
+ ],
+ "components": {
+  "securitySchemes": {
+   "gatewayKey": {
+    "type": "http",
+    "scheme": "bearer",
+    "description": "网关 API Key（lgk-…）；/v1/messages 也接受 x-api-key 头"
+   },
+   "consoleSession": {
+    "type": "apiKey",
+    "in": "cookie",
+    "name": "lg_session",
+    "description": "控制台登录会话；也可用 Authorization: Bearer lgs-…"
+   }
+  }
+ },
+ "security": [
+  {
+   "consoleSession": []
+  }
+ ],
+ "paths": {
+  "/v1/chat/completions": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "OpenAI Chat Completions",
+    "description": "按 model（路由名）选择上游；上游可为 OpenAI 或 Anthropic 协议，自动转换。流式为 SSE。 请求标签：请求头 X-LiteGate-Tags: a,b（OpenAI / Responses 格式还可用 metadata.tags），与 Key 的默认标签合并，用于按标签统计用量与预算；metadata.tags 不转发给上游。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "messages": [
+         {
+          "role": "user",
+          "content": "你好"
+         }
+        ],
+        "max_tokens": 1024,
+        "stream": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "chatcmpl-1",
+         "object": "chat.completion",
+         "choices": [
+          {
+           "index": 0,
+           "message": {
+            "role": "assistant",
+            "content": "你好！"
+           },
+           "finish_reason": "stop"
+          }
+         ],
+         "usage": {
+          "prompt_tokens": 8,
+          "completion_tokens": 4
+         }
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "stream = true 时"
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔的请求标签（最多 8 个，每个 ≤ 64 字符，限 A-Z a-z 0-9 _ . : / -）"
+     },
+     {
+      "name": "X-LiteGate-Session",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "会话标识（会话粘性、规则路由按会话沿用判定）；不带时依次取 x-session-affinity、X-Claude-Code-Session-Id、session-id、请求体 prompt_cache_key / metadata.user_id，都没有时由 Key、模型名、系统提示与首条用户消息推导"
+     },
+     {
+      "name": "traceparent",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "W3C Trace Context（version 00）；开启 OTLP 导出时网关的 span 接入这条 trace"
+     },
+     {
+      "name": "X-LiteGate-Client",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "自报的客户端工具名（≤ 32 字符，限 A-Z a-z 0-9 _ . -）；不带时按请求头识别 claude-code、codex、opencode、openai-sdk、anthropic-sdk，否则为 other"
+     }
+    ]
+   }
+  },
+  "/v1/messages": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "Anthropic Messages",
+    "description": "Key 可放在 x-api-key 或 Authorization: Bearer；anthropic-version / anthropic-beta 透传给 Anthropic 上游。 请求标签：请求头 X-LiteGate-Tags: a,b（OpenAI / Responses 格式还可用 metadata.tags），与 Key 的默认标签合并，用于按标签统计用量与预算；metadata.tags 不转发给上游。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "minimax",
+        "max_tokens": 1024,
+        "messages": [
+         {
+          "role": "user",
+          "content": "你好"
+         }
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "msg_1",
+         "type": "message",
+         "role": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "你好！"
+          }
+         ],
+         "stop_reason": "end_turn",
+         "usage": {
+          "input_tokens": 8,
+          "output_tokens": 4
+         }
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "stream = true 时"
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔的请求标签（最多 8 个，每个 ≤ 64 字符，限 A-Z a-z 0-9 _ . : / -）"
+     },
+     {
+      "name": "X-LiteGate-Session",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "会话标识（会话粘性、规则路由按会话沿用判定）；不带时依次取 x-session-affinity、X-Claude-Code-Session-Id、session-id、请求体 prompt_cache_key / metadata.user_id，都没有时由 Key、模型名、系统提示与首条用户消息推导"
+     },
+     {
+      "name": "traceparent",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "W3C Trace Context（version 00）；开启 OTLP 导出时网关的 span 接入这条 trace"
+     },
+     {
+      "name": "X-LiteGate-Client",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "自报的客户端工具名（≤ 32 字符，限 A-Z a-z 0-9 _ . -）；不带时按请求头识别 claude-code、codex、opencode、openai-sdk、anthropic-sdk，否则为 other"
+     }
+    ]
+   }
+  },
+  "/v1/messages/count_tokens": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "Anthropic count_tokens",
+    "description": "转发给 Anthropic 协议的上游，不计费；路由没有 Anthropic 协议目标或上游不支持（404 / 405 / 501）时本地估算，响应头带 x-litegate-estimated: true。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "minimax-anthropic",
+        "messages": [
+         {
+          "role": "user",
+          "content": "hello"
+         }
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "input_tokens": 9
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/v1/responses": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "OpenAI Responses",
+    "description": "凭证 options.responses_api = true 时透传上游原生 /responses，否则转换为 Chat Completions；previous_response_id 在网关本地展开历史。 请求标签：请求头 X-LiteGate-Tags: a,b（OpenAI / Responses 格式还可用 metadata.tags），与 Key 的默认标签合并，用于按标签统计用量与预算；metadata.tags 不转发给上游。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "input": "你好",
+        "max_output_tokens": 1024
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "resp_1",
+         "object": "response",
+         "status": "completed",
+         "output": [
+          {
+           "type": "message",
+           "role": "assistant",
+           "content": [
+            {
+             "type": "output_text",
+             "text": "你好！"
+            }
+           ]
+          }
+         ],
+         "usage": {
+          "input_tokens": 8,
+          "output_tokens": 4
+         }
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "stream = true 时"
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔的请求标签（最多 8 个，每个 ≤ 64 字符，限 A-Z a-z 0-9 _ . : / -）"
+     },
+     {
+      "name": "X-LiteGate-Session",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "会话标识（会话粘性、规则路由按会话沿用判定）；不带时依次取 x-session-affinity、X-Claude-Code-Session-Id、session-id、请求体 prompt_cache_key / metadata.user_id，都没有时由 Key、模型名、系统提示与首条用户消息推导"
+     },
+     {
+      "name": "traceparent",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "W3C Trace Context（version 00）；开启 OTLP 导出时网关的 span 接入这条 trace"
+     },
+     {
+      "name": "X-LiteGate-Client",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "自报的客户端工具名（≤ 32 字符，限 A-Z a-z 0-9 _ . -）；不带时按请求头识别 claude-code、codex、opencode、openai-sdk、anthropic-sdk，否则为 other"
+     }
+    ]
+   }
+  },
+  "/v1/embeddings": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "OpenAI Embeddings",
+    "description": "只使用 openai 协议的目标。 请求标签：请求头 X-LiteGate-Tags: a,b（OpenAI / Responses 格式还可用 metadata.tags），与 Key 的默认标签合并，用于按标签统计用量与预算；metadata.tags 不转发给上游。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "embed",
+        "input": [
+         "hello"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "object": "list",
+         "data": [
+          {
+           "object": "embedding",
+           "index": 0,
+           "embedding": [
+            0.01,
+            -0.02
+           ]
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔的请求标签（最多 8 个，每个 ≤ 64 字符，限 A-Z a-z 0-9 _ . : / -）"
+     }
+    ]
+   }
+  },
+  "/v1/models": {
+   "get": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "可调用的模型（路由）列表",
+    "description": "通配路由按其凭证的目录供应商展开。",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "object": "list",
+         "data": [
+          {
+           "id": "glm",
+           "object": "model",
+           "owned_by": "litegate"
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/api/playground/chat": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Chat Completions 格式",
+    "description": "控制台管理员身份调用（不需要网关 Key），走完整路由链路；响应头带 x-request-id、x-litegate-target（凭证名 / 上游模型，百分号编码）、x-litegate-attempts、x-litegate-cache。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "messages": [
+         {
+          "role": "user",
+          "content": "你好"
+         }
+        ],
+        "max_tokens": 1024,
+        "stream": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "choices": []
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "stream = true 时"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/messages": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Messages 格式",
+    "description": "控制台管理员身份调用（不需要网关 Key），走完整路由链路；响应头带 x-request-id、x-litegate-target（凭证名 / 上游模型，百分号编码）、x-litegate-attempts、x-litegate-cache。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "minimax",
+        "max_tokens": 1024,
+        "messages": [
+         {
+          "role": "user",
+          "content": "你好"
+         }
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "content": []
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "stream = true 时"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/responses": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Responses 格式",
+    "description": "控制台管理员身份调用（不需要网关 Key），走完整路由链路；响应头带 x-request-id、x-litegate-target（凭证名 / 上游模型，百分号编码）、x-litegate-attempts、x-litegate-cache。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "input": "你好"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "output": []
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "stream = true 时"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health": {
+   "get": {
+    "tags": [
+     "运维"
+    ],
+    "summary": "存活检查",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "status": "ok"
+        }
+       }
+      }
+     }
+    },
+    "429": {
+     "description": "失败次数过多，冷却中；Retry-After 返回等待秒数",
+     "content": {
+      "application/json": {
+       "example": {
+        "error": {
+         "code": "rate_limited",
+         "message": "Too many attempts; retry after 1 seconds"
+        }
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/metrics": {
+   "get": {
+    "tags": [
+     "运维"
+    ],
+    "summary": "Prometheus 指标",
+    "description": "运行参数 metrics_token 非空时要求 Authorization: Bearer <token>。",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": "# TYPE litegate_requests_total counter"
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/api/openapi.json": {
+   "get": {
+    "tags": [
+     "运维"
+    ],
+    "summary": "本接口文档（OpenAPI 3.1）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "openapi": "3.1.0"
+        }
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/api/auth/login": {
+   "post": {
+    "tags": [
+     "认证"
+    ],
+    "summary": "登录（console_auth = true 时）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "username": "admin",
+        "password": "…"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "user": {
+          "id": "user_1",
+          "username": "admin",
+          "role": "admin"
+         },
+         "token": "lgs-…"
+        }
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/api/auth/logout": {
+   "post": {
+    "tags": [
+     "认证"
+    ],
+    "summary": "退出登录",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/me": {
+   "get": {
+    "tags": [
+     "认证"
+    ],
+    "summary": "当前用户",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "local",
+         "username": "admin",
+         "role": "admin",
+         "auth_enabled": false
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/password": {
+   "put": {
+    "tags": [
+     "认证"
+    ],
+    "summary": "修改自己的密码",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "password": "new-password"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/overview": {
+   "get": {
+    "tags": [
+     "概览"
+    ],
+    "summary": "仪表盘概览（配置数量、近期用量）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "routes": 3,
+         "credentials": 3
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/providers": {
+   "get": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "供应商列表",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "id": "zhipuai",
+          "name": "Zhipu AI",
+          "api": "https://open.bigmodel.cn/api/paas/v4",
+          "protocol": "openai"
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/models": {
+   "get": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "模型列表",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "供应商 id"
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "搜索 id / 名称 / 系列"
+     },
+     {
+      "name": "source",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "synced | overridden | custom"
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "分页偏移"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "每页条数（最大 500）"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "items": [
+          {
+           "provider": "zhipuai",
+           "id": "glm-5.3-flash",
+           "cost": {
+            "input": 0.15,
+            "output": 0.5
+           }
+          }
+         ],
+         "total": 1
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/models/{provider}/{model}": {
+   "get": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "模型详情（含用户覆盖）",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "model",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "新增 / 覆盖模型属性（L1 覆盖层）",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "model",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "我的模型",
+        "cost": {
+         "input": 1,
+         "output": 2
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "删除用户覆盖",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "model",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/sync": {
+   "get": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "最近一次 models.dev 同步结果",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "status": "ok",
+         "providers": 223,
+         "models": 8171
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "立即同步 models.dev",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/import": {
+   "post": {
+    "tags": [
+     "模型目录"
+    ],
+    "summary": "导入 models.dev 的 api.json（离线同步）",
+    "description": "与同步 models.dev 一样整体替换同步数据（L0），覆盖与自定义模型不受影响。每个顶层值都必须是带 models 对象的供应商，否则 400。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "openai": {
+         "name": "OpenAI",
+         "npm": "@ai-sdk/openai",
+         "models": {
+          "gpt-4o": {
+           "name": "GPT-4o",
+           "cost": {
+            "input": 2.5,
+            "output": 10
+           },
+           "limit": {
+            "context": 128000,
+            "output": 16384
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "导入结果",
+      "content": {
+       "application/json": {
+        "example": {
+         "providers": 1,
+         "models": 1,
+         "changed_models": 1
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "不是 models.dev 格式"
+     }
+    }
+   }
+  },
+  "/api/credentials": {
+   "get": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "凭证列表（Key 只给末 4 位；套餐凭证带 plan_status）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "id": "cred_1",
+          "name": "GLM",
+          "protocol": "openai",
+          "api_key_hint": "...R4yn",
+          "plan_status": {
+           "state": "normal",
+           "windows": [
+            {
+             "name": "5h",
+             "used_pct": 1,
+             "resets_at": 1790241956075
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "创建凭证",
+    "description": "options：responses_api（布尔）、responses_base_url（原生 Responses 的基址，与 Chat 不同时填写，如智谱 /api/v1）、plan（{kind: minimax | glm | kimi, reserve_pct, window_caps: {窗口名: 百分比}}）、balance（{kind: deepseek | moonshot | openrouter | newapi, alert_below}，按量付费 Key 的余额查询）、think_tags（\"split\"）、extra_body（JSON 对象）、prompt_cache（\"auto\"，仅 Anthropic 协议）、media_api（\"openai\" | \"minimax\"）、max_concurrency（并发上限，0 = 不限）；null 删除该项。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "GLM",
+        "protocol": "openai",
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "api_key": "…",
+        "provider": "zhipuai",
+        "headers": {},
+        "options": {
+         "plan": {
+          "kind": "glm",
+          "reserve_pct": 10
+         },
+         "think_tags": "split",
+         "extra_body": {
+          "reasoning_split": true
+         },
+         "responses_api": false
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/credentials/from-provider": {
+   "post": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "由目录供应商一键创建",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "provider": "zhipuai",
+        "api_key": "…",
+        "name": "智谱"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/credentials/{id}": {
+   "get": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "凭证详情",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "更新凭证（部分字段；api_key 省略则保持不变）",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "删除凭证（被路由引用时拒绝）",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/routes": {
+   "get": {
+    "tags": [
+     "路由表"
+    ],
+    "summary": "路由列表（带路由级限额）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "路由表"
+    ],
+    "summary": "创建路由",
+    "description": "名称以 * 结尾为通配路由（任意前缀，如 openrouter/*、claude-*；单独 * 为兜底），目标上游模型写 * 代入剩余部分。aliases 为同样路由到本路由的精确模型名（全局唯一）。匹配顺序：路由名 → 别名 → 最长前缀通配。 options：cache_ttl_s（响应缓存秒数）、strategy（weighted | order | rotate | usage | smart | pace，同优先级内的顺序）、affinity（auto | session | off，会话粘性）、rules（规则列表：{when: {min_tokens, max_tokens, images, thinking, client, tags, hours, intent}, use: 路由名} 或 {when, skip: [凭证 id]}，最多 16 条）、classifier（意图判断模型的路由名）；null 删除该项。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "glm",
+        "targets": [
+         {
+          "credential": "cred_1",
+          "upstream_model": "glm-5.3-flash",
+          "model_ref": [
+           "zhipuai",
+           "glm-5.3-flash"
+          ],
+          "priority": 0,
+          "weight": 1
+         }
+        ],
+        "fallbacks": [
+         "minimax"
+        ],
+        "access": "all",
+        "options": {
+         "cache_ttl_s": 0,
+         "strategy": "smart",
+         "affinity": "auto",
+         "rules": [
+          {
+           "when": {
+            "min_tokens": 128000
+           },
+           "use": "kimi"
+          },
+          {
+           "when": {
+            "intent": "writing or fixing tests"
+           },
+           "use": "strong"
+          }
+         ],
+         "classifier": "glm-flash"
+        },
+        "aliases": [
+         "claude-sonnet-4-5"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/routes/{name}": {
+   "get": {
+    "tags": [
+     "路由表"
+    ],
+    "summary": "路由详情",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "路由表"
+    ],
+    "summary": "更新路由",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "fallbacks": []
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "路由表"
+    ],
+    "summary": "删除路由",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/routes/{name}/capabilities": {
+   "get": {
+    "tags": [
+     "路由表"
+    ],
+    "summary": "路由能力：能到达的上游及推理、上下文、最大输出、图片输入（Playground 自动填参数）",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "description": "路由名、别名或通配展开名",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "route": "coding",
+         "targets": [
+          {
+           "credential": "cred_…",
+           "credential_name": "glm-cp",
+           "upstream_model": "glm-5.3-flash",
+           "via": [
+            "coding",
+            "glm",
+            "glm-5.3-flash"
+           ],
+           "known": true,
+           "reasoning": true,
+           "context": 1000000,
+           "output": 131072,
+           "images": true,
+           "locked_sampling": false
+          }
+         ],
+         "summary": {
+          "reasoning": "all",
+          "images": "some",
+          "context": 262144,
+          "output": 32768,
+          "locked_sampling": true,
+          "unknown": 0
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "没有匹配的路由"
+     }
+    }
+   }
+  },
+  "/api/keys": {
+   "get": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "网关 Key 列表（普通用户只看到自己的；带限额与预算）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "创建网关 Key（完整 Key 只在响应中返回一次）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "ci-bot",
+        "allowed_routes": "all",
+        "max_tokens": 4096,
+        "expires_at": null,
+        "tags": [
+         "tool:claude-code"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "key_1",
+         "key": "lgk-…"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/keys/{id}": {
+   "put": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "更新 Key",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "删除 Key",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/limits": {
+   "get": {
+    "tags": [
+     "限额与预算"
+    ],
+    "summary": "限额列表",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "限额与预算"
+    ],
+    "summary": "设置限额（三项全空即删除）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "scope": {
+         "type": "key_route",
+         "key_id": "key_1",
+         "route": "glm"
+        },
+        "rpm": 60,
+        "tpm": 100000,
+        "max_parallel": 4
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/budgets": {
+   "get": {
+    "tags": [
+     "限额与预算"
+    ],
+    "summary": "预算列表（带本期已用）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "限额与预算"
+    ],
+    "summary": "设置预算（scope.type：key | user | tag；max_usd: null 删除）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "scope": {
+         "type": "key",
+         "key_id": "key_1"
+        },
+        "period": "month",
+        "max_usd": 20
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/logs": {
+   "get": {
+    "tags": [
+     "日志与用量"
+    ],
+    "summary": "请求日志（按时间倒序，游标分页；带 q 时全文检索）",
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "起始毫秒时间戳"
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "结束毫秒时间戳"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "条数"
+     },
+     {
+      "name": "cursor",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "上一页返回的 next_cursor"
+     },
+     {
+      "name": "key_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "按 Key 过滤（playground 为控制台 Playground）"
+     },
+     {
+      "name": "route",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "按路由过滤"
+     },
+     {
+      "name": "user_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "按用户过滤"
+     },
+     {
+      "name": "errors_only",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      },
+      "description": "只看失败"
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "对话全文检索"
+     },
+     {
+      "name": "tag",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "按标签过滤"
+     },
+     {
+      "name": "client",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "按客户端工具筛选"
+     },
+     {
+      "name": "session",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "会话标识"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "items": [
+          {
+           "id": "fff9…",
+           "route": "glm",
+           "status": 200,
+           "usage": {
+            "input": 16,
+            "output": 124
+           },
+           "cost": 0,
+           "plan": true,
+           "plan_usd": 6e-05
+          }
+         ],
+         "next_cursor": null
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/logs/{id}": {
+   "get": {
+    "tags": [
+     "日志与用量"
+    ],
+    "summary": "日志详情（含对话内容）",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions": {
+   "get": {
+    "tags": [
+     "日志与用量"
+    ],
+    "summary": "会话列表（按最近活动新→旧）",
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      },
+      "description": "最近活动起（毫秒）"
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      },
+      "description": "最近活动止（毫秒）"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      },
+      "description": "每页条数"
+     },
+     {
+      "name": "cursor",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "上一页的 next_cursor"
+     },
+     {
+      "name": "key_id",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "网关 Key"
+     },
+     {
+      "name": "user_id",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "用户"
+     },
+     {
+      "name": "client",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "客户端工具"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "items": [],
+         "next_cursor": null
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{id}": {
+   "get": {
+    "tags": [
+     "日志与用量"
+    ],
+    "summary": "会话详情（汇总与按时间排列的请求）",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/usage": {
+   "get": {
+    "tags": [
+     "日志与用量"
+    ],
+    "summary": "用量汇总（按小时聚合）",
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "起始毫秒时间戳"
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "结束毫秒时间戳"
+     },
+     {
+      "name": "group_by",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔：hour, day, key_id, user_id, route, credential, model, tag（按标签时统计标签行，一个请求计入它的每个标签）"
+     },
+     {
+      "name": "key_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "过滤"
+     },
+     {
+      "name": "route",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "过滤"
+     },
+     {
+      "name": "user_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "过滤"
+     },
+     {
+      "name": "tag",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "按标签过滤"
+     },
+     {
+      "name": "client",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "按客户端工具筛选；group_by 也可取 client"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "route": "glm",
+          "requests": 2,
+          "errors": 0,
+          "input": 81,
+          "output": 279,
+          "cost": 0,
+          "plan_requests": 2,
+          "plan_usd": 0.0002,
+          "p50_ms": 3500,
+          "p95_ms": 4850
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/health": {
+   "get": {
+    "tags": [
+     "上游健康"
+    ],
+    "summary": "各目标最近 5 分钟成功率、耗时、冷却与套餐状态，及探活结果",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/health/reset": {
+   "post": {
+    "tags": [
+     "上游健康"
+    ],
+    "summary": "解除冷却（不带参数解除全部）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "credential": "cred_1",
+        "upstream_model": "glm-5.3-flash"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/health/probe": {
+   "post": {
+    "tags": [
+     "上游健康"
+    ],
+    "summary": "立即探活（可只探指定凭证）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "credentials": [
+         "cred_1"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/plans": {
+   "get": {
+    "tags": [
+     "订阅套餐"
+    ],
+    "summary": "套餐凭证的额度状态",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "plans": [
+          {
+           "credential": "cred_1",
+           "kind": "glm",
+           "state": "normal",
+           "level": "pro",
+           "windows": [
+            {
+             "name": "5h",
+             "used_pct": 1,
+             "resets_at": 1790241956075
+            }
+           ]
+          }
+         ],
+         "poll_interval_ms": 300000
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/plans/refresh": {
+   "post": {
+    "tags": [
+     "订阅套餐"
+    ],
+    "summary": "立即查询额度（可只查指定凭证）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "credentials": [
+         "cred_1"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/channels": {
+   "get": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "通知渠道列表（地址只给主机与末 4 位）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "创建渠道（type：webhook | feishu | dingtalk | wecom；secret 为飞书 / 钉钉签名密钥）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "运维群",
+        "type": "feishu",
+        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/…",
+        "secret": "…"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/channels/{id}": {
+   "put": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "更新渠道",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "删除渠道（同时从规则中移除）",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/channels/{id}/test": {
+   "post": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "发送测试消息",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": false,
+         "error": "HTTP 500: …"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/rules": {
+   "get": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "告警规则列表",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "创建规则",
+    "description": "event：budget（阈值 %，默认 80）、plan_quota（阈值 %，默认 90）、upstream_down（连续失败次数，默认 3）、catalog_sync_failed。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "event": "plan_quota",
+        "threshold": 90,
+        "channels": [
+         "ch_1"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/rules/{id}": {
+   "put": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "更新规则",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "threshold": 95,
+        "enabled": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "删除规则",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/history": {
+   "get": {
+    "tags": [
+     "告警"
+    ],
+    "summary": "通知记录（新 → 旧）",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "条数，默认 100，最大 500"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "id": "alert_1",
+          "event": "plan_quota",
+          "level": "warning",
+          "title": "套餐额度告警：GLM",
+          "text": "5h 窗口已用 92%…",
+          "deliveries": [
+           {
+            "channel": "ch_1",
+            "status": "ok"
+           }
+          ]
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/settings": {
+   "get": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "全部运行参数的生效值与来源（控制台 / 环境变量 / sys.config / 默认值）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/settings/{key}": {
+   "put": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "设置运行参数（value: null 恢复下层）",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "value": 5
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/store": {
+   "get": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "交互数据存储状态（各 cask 条数、磁盘占用）与最近清理结果",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/backups": {
+   "get": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "配置备份列表与最近一次结果",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "backups": [],
+         "status": null,
+         "enabled": false
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "立即备份一次（需已设置 backup_passphrase）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "file": "litegate-backup-20261014-120000.json",
+         "size": 1024
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/backups/{name}": {
+   "delete": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "删除指定备份文件",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/store/cleanup": {
+   "post": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "立即按保留期清理并合并",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/config/export": {
+   "post": {
+    "tags": [
+     "配置备份"
+    ],
+    "summary": "导出配置（上游 Key 与告警渠道地址用口令加密）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "passphrase": "至少 8 位"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "format": "litegate-config",
+         "version": 1
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/config/import": {
+   "post": {
+    "tags": [
+     "配置备份"
+    ],
+    "summary": "导入配置（mode：merge | replace；dry_run 只预览）",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "data": {
+         "format": "litegate-config"
+        },
+        "passphrase": "…",
+        "mode": "merge",
+        "dry_run": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "credentials": {
+          "new": 0,
+          "overwritten": 3,
+          "deleted": 0
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/users": {
+   "get": {
+    "tags": [
+     "用户"
+    ],
+    "summary": "用户列表（console_auth = true 时使用）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "用户"
+    ],
+    "summary": "创建用户",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "username": "alice",
+        "password": "…",
+        "role": "user"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/users/{id}": {
+   "put": {
+    "tags": [
+     "用户"
+    ],
+    "summary": "更新用户",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "用户"
+    ],
+    "summary": "删除用户",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/images/generations": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "图片生成（OpenAI 格式）",
+    "description": "只使用 openai 协议的目标；凭证 options.media_api = minimax 时转换为 MiniMax /image_generation（size 换算为最接近的 aspect_ratio）。按张计费：模型目录覆盖 cost.image（每张美元）。",
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔的请求标签"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "img",
+        "prompt": "一只橙色的猫",
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "url"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "created": 1790230177,
+         "data": [
+          {
+           "url": "https://…/1.png"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/audio/speech": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "语音合成（OpenAI 格式，返回音频）",
+    "description": "只使用 openai 协议的目标；凭证 options.media_api = minimax 时转换为 MiniMax /t2a_v2（十六进制音频解码后返回，OpenAI 预置音色名换成 MiniMax 默认音色）。按字符计费：模型目录覆盖 cost.tts（每百万字符美元）。",
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔的请求标签"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "tts",
+        "input": "你好",
+        "voice": "tongtong",
+        "response_format": "wav",
+        "speed": 1
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "音频二进制（content-type 随格式：audio/mpeg、audio/wav 等）",
+      "content": {
+       "audio/mpeg": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/systemone": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "结构化决策（TypeSafe System One，如百炼 decision-model-preview）",
+    "description": "一次前向返回分类（choice）、是非（noul）、有序打分（score）的结果与概率分布，不生成文本。只使用 openai 协议的目标，透传到凭证 {base_url}/systemone（百炼 base_url 为 …/compatible-mode/v1，本地 Laya 为 http://host:port/v1），model 换为上游模型，响应里的 model 换回请求的路由名；不经过中间件。按输入 token 计费（模型目录覆盖 cost.input）。TypeSafe SDK 的 base_url 指向网关即可。",
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "逗号分隔的请求标签"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "decision-model-preview",
+        "state": {
+         "ticket_id": "T-1001",
+         "content": "订单支付后超过 24 小时仍未到账"
+        },
+        "questions": {
+         "department": {
+          "type": "choice",
+          "instructions": "应该由哪个团队处理？",
+          "criteria": {
+           "billing": "支付、退款和账单问题",
+           "technical": "产品故障和集成问题"
+          }
+         },
+         "escalate": {
+          "type": "noul",
+          "instructions": "是否需要立即通知值班人员？"
+         },
+         "severity": {
+          "type": "score",
+          "instructions": "这个问题有多严重？",
+          "criteria": [
+           "轻微问题",
+           "部分功能受影响",
+           "核心功能不可用",
+           "严重业务影响"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "各问题的回答、概率分布与置信度",
+      "content": {
+       "application/json": {
+        "example": {
+         "model": "decision-model-preview",
+         "request_id": "7b986c65-b223-9341-b5f0-b988e27ecaac",
+         "answers": {
+          "department": {
+           "type": "choice",
+           "choice": "billing",
+           "confidence": 0.88,
+           "probabilities": {
+            "billing": 0.94,
+            "technical": 0.06
+           }
+          },
+          "escalate": {
+           "type": "noul",
+           "noul": 0.99
+          },
+          "severity": {
+           "type": "score",
+           "score": 2.25,
+           "confidence": 0.91,
+           "probabilities": {
+            "0": 0.0,
+            "1": 0.01,
+            "2": 0.73,
+            "3": 0.26
+           }
+          }
+         },
+         "usage": {
+          "input_tokens": 125
+         },
+         "latency_ms": 52.9
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/images": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "图片生成",
+    "description": "控制台管理员身份调用（不需要网关 Key），走完整路由链路；响应头带 x-request-id、x-litegate-target（凭证名 / 上游模型，百分号编码）、x-litegate-attempts、x-litegate-cache。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "img",
+        "prompt": "一只橙色的猫",
+        "n": 1,
+        "size": "1024x1024"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "data": [
+          {
+           "url": "https://…"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/speech": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "语音合成（返回音频）",
+    "description": "控制台管理员身份调用（不需要网关 Key），走完整路由链路；响应头带 x-request-id、x-litegate-target（凭证名 / 上游模型，百分号编码）、x-litegate-attempts、x-litegate-cache。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "tts",
+        "input": "你好",
+        "voice": "tongtong",
+        "response_format": "wav"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "音频二进制",
+      "content": {
+       "audio/mpeg": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/systemone": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "结构化决策（System One）",
+    "description": "控制台管理员身份调用（不需要网关 Key），走完整路由链路；响应头带 x-request-id、x-litegate-target（凭证名 / 上游模型，百分号编码）、x-litegate-attempts、x-litegate-cache。 请求体与 /v1/systemone 相同（model、state、questions）。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "decision-model-preview",
+        "state": "订单支付后超过 24 小时仍未到账",
+        "questions": {
+         "department": {
+          "type": "choice",
+          "instructions": "应该由哪个团队处理？",
+          "criteria": {
+           "billing": "支付、退款和账单问题",
+           "technical": "产品故障和集成问题"
+          }
+         },
+         "escalate": {
+          "type": "noul",
+          "instructions": "是否需要立即通知值班人员？"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "各问题的回答、概率分布与置信度",
+      "content": {
+       "application/json": {
+        "example": {
+         "model": "decision-model-preview",
+         "answers": {
+          "department": {
+           "type": "choice",
+           "choice": "billing",
+           "confidence": 0.88,
+           "probabilities": {
+            "billing": 0.94,
+            "technical": 0.06
+           }
+          },
+          "escalate": {
+           "type": "noul",
+           "noul": 0.99
+          }
+         },
+         "usage": {
+          "input_tokens": 61
+         },
+         "latency_ms": 52.9
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/otlp/test": {
+   "post": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "发送一个测试 span 到 otlp_endpoint，检查链路导出配置",
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "发送成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "未设置 otlp_endpoint"
+     },
+     "502": {
+      "description": "收集器拒绝或无法连接"
+     }
+    }
+   }
+  },
+  "/api/otlp/test-metric": {
+   "post": {
+    "tags": [
+     "链路导出"
+    ],
+    "summary": "发送一个测试指标到 /v1/metrics（需先设置 otlp_endpoint）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/balances": {
+   "get": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "按量付费 Key 的余额（配置了 options.balance 的凭证）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "balances": [
+          {
+           "credential": "cred_…",
+           "credential_name": "deepseek",
+           "kind": "deepseek",
+           "amount": 110.0,
+           "currency": "CNY",
+           "details": [
+            {
+             "currency": "CNY",
+             "amount": 110.0
+            }
+           ],
+           "alert_below": 10,
+           "fetched_at": 1791880000000,
+           "checked_at": 1791880000000,
+           "error": null
+          }
+         ],
+         "poll_interval_ms": 1800000
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/balances/refresh": {
+   "post": {
+    "tags": [
+     "上游凭证"
+    ],
+    "summary": "立即查询余额（可带 credentials: [Id] 只查指定凭证）",
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "example": {
+        "credentials": [
+         "cred_…"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功，返回最新余额列表"
+     }
+    }
+   }
+  },
+  "/api/live/state": {
+   "get": {
+    "tags": [
+     "上游健康"
+    ],
+    "summary": "实时路由视图快照",
+    "description": "每条路由最近 5 分钟的请求 / 改道 / 错误数与客户端、进行中的请求、所选路由（?route=，默认最忙的一条）每个候选目标的实时状态。实时事件流为 GET /api/live/stream（text/event-stream，控制台身份）：先推一条 state，之后推 request_start、decision、attempt_start、attempt_end、request_end 事件。",
+    "parameters": [
+     {
+      "name": "route",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功"
+     }
+    }
+   }
+  },
+  "/api/middleware": {
+   "get": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "网关中间件列表（附调用统计）与可用实现",
+    "description": "中间件在三个点位运行：on_request（请求体解析后、路由前）、on_event（流式帧写给客户端前）、on_response（非流式回复写给客户端前）。钩子出错或超时时原样放行。impls 列出可用实现及其支持的钩子与配置示例。",
+    "responses": {
+     "200": {
+      "description": "成功"
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "创建中间件",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "中文回答",
+        "impl": "system_prompt",
+        "options": {
+         "text": "请始终用简体中文回答。"
+        },
+        "routes": "all",
+        "position": 0,
+        "enabled": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功"
+     },
+     "400": {
+      "description": "实现名、路由或配置无效"
+     }
+    }
+   }
+  },
+  "/api/middleware/plugins/rescan": {
+   "post": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "重新扫描插件目录（加载 *.beam 与 */ebin/*.beam，改过的模块热替换）",
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "dir": "/var/lib/litegate/plugins",
+         "files": [
+          {
+           "module": "mw_block_models",
+           "file": "/var/lib/litegate/plugins/mw_block_models.beam",
+           "result": {
+            "status": "loaded",
+            "impl": "block_models"
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/middleware/test": {
+   "post": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "试运行：用实现与配置对示例请求体调用一次 on_request（不经过路由、不访问上游）",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "example": {
+        "impl": "word_guard",
+        "options": {
+         "words": [
+          "示例敏感词"
+         ],
+         "mode": "reject"
+        },
+        "format": "openai",
+        "body": {
+         "model": "fast",
+         "messages": [
+          {
+           "role": "user",
+           "content": "你好"
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功",
+      "content": {
+       "application/json": {
+        "example": {
+         "result": {
+          "kind": "continue"
+         },
+         "us": 35,
+         "timeout_ms": 250
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/middleware/{id}": {
+   "put": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "修改中间件（不能改实现）",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功"
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "运行参数与存储"
+    ],
+    "summary": "删除中间件",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "成功"
+     }
+    }
+   }
+  },
+  "/api/unfit": {
+   "get": {
+    "tags": [
+     "上游健康"
+    ],
+    "summary": "已学到的上游参数限制",
+    "description": "上游以 400 / 422 拒绝某个参数或用法时网关记下 {凭证, 上游模型, 特性}，之后的请求自动改写。特性：temperature、top_p、thinking_off、enable_thinking_sync、prefill、output_config、json_schema。",
+    "responses": {
+     "200": {
+      "description": "成功"
+     }
+    }
+   }
+  },
+  "/api/unfit/forget": {
+   "post": {
+    "tags": [
+     "上游健康"
+    ],
+    "summary": "清除已学到的限制（带 credential、upstream_model、feature 只清一条，否则全部）",
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "example": {
+        "credential": "cred_…",
+        "upstream_model": "kimi-for-coding",
+        "feature": "temperature"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "成功"
+     }
+    }
+   }
+  }
+ }
+}

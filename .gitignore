@@ -1,0 +1,25 @@
+_build/
+_checkouts/
+rebar3.crashdump
+erl_crash.dump
+*.beam
+.rebar3/
+log/
+data/
+Mnesia.*/
+.eunit/
+ct_logs/
+logs/
+
+# frontend
+web/node_modules/
+web/dist/
+apps/lg_web/priv/static/
+
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 浏览器自动化产物
+.playwright-mcp/

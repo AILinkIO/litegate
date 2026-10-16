@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [erl, main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ['27', '28']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          rebar3-version: '3'
+      # bitcask NIF：CMake + C++23（CMAKE_CXX_STANDARD 23）+ libicu
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ libicu-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: rebar3-${{ runner.os }}-otp${{ matrix.otp }}-${{ hashFiles('rebar.lock') }}
+      - run: rebar3 compile
+      - run: rebar3 eunit
+      - run: rebar3 xref
+      # Dialyzer 告警清零基线在 OTP 28.5 校准；27 的 stdlib 契约可能不同，先只在 28 上门禁
+      - run: rebar3 dialyzer
+        if: matrix.otp == '28'
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx tsc -b
+      - run: npm test
+      - run: npx oxlint
+      - run: npm run build

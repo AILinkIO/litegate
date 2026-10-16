@@ -1,0 +1,9 @@
+{application, lg_store, [
+    {description, "LiteGate interaction data store on bitcask"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {lg_store_app, []}},
+    {applications, [kernel, stdlib, bitcask, lg_core]},
+    {env, []},
+    {licenses, ["Apache-2.0"]}
+]}.
