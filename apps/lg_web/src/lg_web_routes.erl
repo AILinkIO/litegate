@@ -27,6 +27,7 @@ routes() ->
      {"/api/playground/systemone", lg_web_llm, #{format => openai, kind => systemone, source => playground}},
      %% 控制台实时事件流（SSE）
      {"/api/live/stream", lg_web_live, #{}},
+     {"/api/version", lg_web_version, #{}},
      %% 控制台管理 API
      {"/api/[...]", lg_api, #{}},
      %% 控制台静态资源（web/ 构建产物）；其余 /console 路径交给前端路由

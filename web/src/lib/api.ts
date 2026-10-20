@@ -51,6 +51,11 @@ export function qs(params: Record<string, string | number | boolean | undefined 
 
 // ---- 类型 ----
 
+export interface VersionInfo {
+  version: string
+  commit: string
+}
+
 export type Role = 'admin' | 'user'
 
 export interface User {

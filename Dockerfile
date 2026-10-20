@@ -12,7 +12,7 @@ RUN mkdir -p ../apps/lg_web/priv/static && npm run build
 
 # ---- Erlang 构建（bitcask NIF：CMake + C++23 + libicu）----
 FROM erlang:28 AS build
-RUN apt-get update && apt-get install -y --no-install-recommends cmake g++ libicu-dev git libtbb-dev \
+RUN sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends cmake g++ libicu-dev git libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY rebar.config rebar.lock ./
@@ -20,13 +20,19 @@ COPY config/ config/
 COPY apps/ apps/
 # 前端产物（上一阶段）就位后再编 release
 COPY --from=web /build/apps/lg_web/priv/static apps/lg_web/priv/static
+# 构建信息（git commit，构建时通过 --build-arg GIT_SHA 注入；缺省 dev）
+ARG GIT_SHA=dev
+RUN printf "{\"commit\": \"%s\"}" "$GIT_SHA" > apps/lg_web/priv/build-info.json \
+    && cat apps/lg_web/priv/build-info.json
+# github 加速（bitcask 等 git 依赖；容器内 github.com 直连不可达时走代理镜像）
+RUN git config --global url."https://gh-proxy.com/https://github.com/".insteadOf "https://github.com/"
 RUN rebar3 as prod release
 
 # ---- 运行时 ----
 # 与构建阶段同为 Debian trixie（erlang:28 基于 trixie，ERTS 依赖 glibc 2.41），libicu 供 bitcask NIF 使用；
 # ca-certificates 供上游 HTTPS 校验（public_key:cacerts_get/0 读系统证书，--no-install-recommends 不会随 curl 装上）
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libicu76 libtbb12 curl ca-certificates \
+RUN sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends libicu76 libtbb12 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /data litegate
 COPY --from=build /build/_build/prod/rel/litegate /opt/litegate

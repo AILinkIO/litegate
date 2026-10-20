@@ -15,7 +15,20 @@ import {
 } from '@/components/ui/sidebar'
 import { Logo } from '@/assets/logo'
 import { visibleNav } from './nav'
+import { useGet } from '@/lib/query'
+import type { VersionInfo } from '@/lib/api'
 import { NavUser } from './nav-user'
+
+function VersionBadge() {
+  const { data } = useGet<VersionInfo>('/version')
+  if (!data) return null
+  const commit = data.commit.length > 7 ? data.commit.slice(0, 7) : data.commit
+  return (
+    <div className="px-2 pb-1 text-center text-[11px] text-muted-foreground/70">
+      v{data.version} · {commit}
+    </div>
+  )
+}
 
 export function AppSidebar() {
   const { user } = useAuth()
@@ -64,6 +77,7 @@ export function AppSidebar() {
       </SidebarContent>
       <SidebarFooter>
         <NavUser />
+        <VersionBadge />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>
