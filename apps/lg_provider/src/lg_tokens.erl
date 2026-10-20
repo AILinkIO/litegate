@@ -18,18 +18,9 @@ estimate(Req) ->
 %% @doc 一段文本的 token 估算。
 -spec text(binary()) -> non_neg_integer().
 text(Bin) when is_binary(Bin) ->
-    case unicode:characters_to_list(Bin) of
-        L when is_list(L) ->
-            {Cjk, OtherBytes} = lists:foldl(fun(C, {N, B}) ->
-                                                    case cjk(C) of
-                                                        true -> {N + 1, B};
-                                                        false -> {N, B + utf8_len(C)}
-                                                    end
-                                            end, {0, 0}, L),
-            Cjk + (OtherBytes + 3) div 4;
-        _ ->
-            (byte_size(Bin) + 3) div 4
-    end;
+    %% binary 逐码点扫描（T14：避免 characters_to_list 的大分配）
+    {Cjk, OtherBytes} = scan_bytes(Bin, 0, 0),
+    Cjk + (OtherBytes + 3) div 4;
 text(_) ->
     0.
 
@@ -61,6 +52,18 @@ utf8_len(C) when C < 16#80 -> 1;
 utf8_len(C) when C < 16#800 -> 2;
 utf8_len(C) when C < 16#10000 -> 3;
 utf8_len(_) -> 4.
+
+%% 逐码点扫描 binary：统计 CJK 字符数与非 CJK 字节的 UTF-8 长度
+scan_bytes(<<C/utf8, Rest/binary>>, Cjk, OtherBytes) ->
+    case cjk(C) of
+        true -> scan_bytes(Rest, Cjk + 1, OtherBytes);
+        false -> scan_bytes(Rest, Cjk, OtherBytes + utf8_len(C))
+    end;
+scan_bytes(<<_, Rest/binary>>, Cjk, OtherBytes) ->
+    %% 非 UTF-8 首字节（非法序列）：按 1 字节非 CJK 计
+    scan_bytes(Rest, Cjk, OtherBytes + 1);
+scan_bytes(<<>>, Cjk, OtherBytes) ->
+    {Cjk, OtherBytes}.
 
 list(L) when is_list(L) -> L;
 list(_) -> [].

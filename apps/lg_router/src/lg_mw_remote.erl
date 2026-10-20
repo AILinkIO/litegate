@@ -46,12 +46,27 @@ on_event(Ev, Ctx, O) -> call(on_event, Ev, Ctx, O).
 on_response(Body, Ctx, O) -> call(on_response, Body, Ctx, O).
 
 call(Hook, Arg, Ctx, O) ->
-    Node = binary_to_atom(maps:get(<<"node">>, O)),
-    Mod = binary_to_atom(maps:get(<<"module">>, O)),
-    node() =:= nonode@nohost andalso error(gateway_not_distributed),
-    Timeout = maps:get(<<"timeout_ms">>, O, ?DEFAULT_TIMEOUT),
-    try erpc:call(Node, Mod, Hook, [Arg, Ctx, maps:get(<<"config">>, O, #{})], Timeout)
+    case atoms(O) of
+        {ok, Node, Mod} ->
+            node() =:= nonode@nohost andalso error(gateway_not_distributed),
+            Timeout = maps:get(<<"timeout_ms">>, O, ?DEFAULT_TIMEOUT),
+            try erpc:call(Node, Mod, Hook, [Arg, Ctx, maps:get(<<"config">>, O, #{})], Timeout)
+            catch
+                %% 远程模块没导出这个钩子：视为不处理
+                error:{exception, undef, [{Mod, Hook, _, _} | _]} -> continue
+            end;
+        {error, Reason} ->
+            logger:warning("mw_remote: skipping hook ~p: ~0p", [Hook, Reason]),
+            continue
+    end.
+
+%% binary_to_existing_atom：不存在的节点 / 模块名不创建原子（原子不可回收），返回明确错误
+atoms(O) ->
+    try
+        {ok,
+         binary_to_existing_atom(maps:get(<<"node">>, O), utf8),
+         binary_to_existing_atom(maps:get(<<"module">>, O), utf8)}
     catch
-        %% 远程模块没导出这个钩子：视为不处理
-        error:{exception, undef, [{Mod, Hook, _, _} | _]} -> continue
+        error:badarg ->
+            {error, {unknown_node_or_module, maps:get(<<"node">>, O, <<>>), maps:get(<<"module">>, O, <<>>)}}
     end.

@@ -16,9 +16,10 @@
 -include_lib("lg_core/include/lg_core.hrl").
 
 -export([create/1, update/2, delete/1, get/1, list/0, to_map/1, match/1, is_wildcard/1, build_tx/2, build_tx/3,
-         aliases/1, check_graph_tx/0]).
+         aliases/1, check_graph_tx/0, rebuild_wildcards/0]).
 
 -define(MAX_NESTING, 3).
+-define(WC_TAB, lg_route_wildcards).
 
 %% 合法顶层字段；未知字段（如把 rules/classifier 误放在顶层）静默丢弃会让用户误以为已保存，直接拒绝
 -define(FIELDS, [<<"name">>, <<"targets">>, <<"fallbacks">>, <<"access">>, <<"options">>, <<"aliases">>, <<"enabled">>]).
@@ -34,7 +35,11 @@ create(#{<<"name">> := Name} = P) when is_binary(Name) ->
                  end
          end,
     case check_name(Name) of
-        ok -> lg_db:transaction(Tx);
+        ok ->
+            case lg_db:transaction(Tx) of
+                {ok, R} -> ok = rebuild_wildcards(), {ok, R};
+                Err -> Err
+            end;
         Err -> Err
     end;
 create(_) ->
@@ -50,7 +55,10 @@ update(Name, P) ->
                      [] -> mnesia:abort(not_found)
                  end
          end,
-    lg_db:transaction(Tx).
+    case lg_db:transaction(Tx) of
+        {ok, R} -> ok = rebuild_wildcards(), {ok, R};
+        Err -> Err
+    end.
 
 %% @doc 被其他路由作为回退、嵌套目标或意图判断路由（classifier / decision_route）引用时拒绝删除。
 -spec delete(binary()) -> ok | {error, term()}.
@@ -66,6 +74,7 @@ delete(Name) ->
                                                  [mnesia:delete({lg_route_alias, A}) || A <- aliases_tx(Name)],
                                                  mnesia:delete({lg_route, Name})
                                          end),
+            ok = rebuild_wildcards(),
             ok;
         Users -> {error, {in_use, Users}}
     end.
@@ -90,15 +99,38 @@ match(Name) ->
     end.
 
 match_wildcard(Name) ->
-    Cands = [{byte_size(P), R, binary:part(Name, byte_size(P), byte_size(Name) - byte_size(P))}
-             || #lg_route{name = N} = R <- lg_db:all(lg_route), is_wildcard(N),
-                P <- [prefix(N)],
-                byte_size(Name) > byte_size(P),
-                binary:part(Name, 0, byte_size(P)) =:= P],
-    case lists:reverse(lists:keysort(1, Cands)) of
-        [{_, R, Rest} | _] -> {ok, R, Rest};
+    ensure_wc(),
+    NameLen = byte_size(Name),
+    Matches = [{PL, P, RN} || {PL, P, RN} <- ets:tab2list(?WC_TAB),
+                              PL =< NameLen,
+                              binary:part(Name, 0, PL) =:= P],
+    case lists:reverse(lists:keysort(1, Matches)) of
+        [{PL, _, RN} | _] ->
+            case lg_db:read(lg_route, RN) of
+                {ok, R} -> {ok, R, binary:part(Name, PL, NameLen - PL)};
+                not_found ->
+                    %% 缓存过期（路由已删）：重建后重试一次
+                    ok = rebuild_wildcards(),
+                    match_wildcard(Name)
+            end;
         [] -> not_found
     end.
+
+%% 从路由表全量重建通配前缀缓存（写路由后调用）
+rebuild_wildcards() ->
+    ensure_wc(),
+    Wildcards = [{byte_size(P), P, N}
+                 || #lg_route{name = N} <- lg_db:all(lg_route),
+                    is_wildcard(N),
+                    P <- [prefix(N)]],
+    true = ets:delete_all_objects(?WC_TAB),
+    true = ets:insert(?WC_TAB, Wildcards),
+    ok.
+
+ensure_wc() ->
+    _ = catch ets:new(?WC_TAB, [named_table, public, {read_concurrency, true},
+                                {write_concurrency, true}]),
+    ok.
 
 -spec is_wildcard(binary()) -> boolean().
 is_wildcard(<<"*">>) -> true;

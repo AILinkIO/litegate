@@ -5,6 +5,7 @@
 -module(lg_store).
 
 -export([new_id/0, record/2, flush/0,
+         flush/1,
          log/1, logs/1, search/1, messages/1, usage/1, status/0, sessions/1, session/1,
          cache_get/1, cache_put/3, response_get/1, response_put/2, alert_put/1, alerts/1]).
 
@@ -68,6 +69,11 @@ record(#{id := Id} = Log0, Messages) ->
 -spec flush() -> ok.
 flush() ->
     lg_store_writer:flush().
+
+%% @doc 按范围落盘（logs = 日志 + 会话批次，all = 另做用量合并）。
+-spec flush(logs | all) -> ok.
+flush(Scope) ->
+    lg_store_writer:flush(Scope).
 
 usage_delta(Log) ->
     U = maps:get(usage, Log, #{}),
@@ -219,7 +225,7 @@ messages(Id) ->
 %%    其余作过滤）、errors_only、limit（默认 50，上限 500）、cursor（上一页返回的 next_cursor）
 -spec logs(map()) -> #{items := [log()], next_cursor := binary() | null}.
 logs(Q) ->
-    flush(),
+    flush(logs),
     Now = lg_time:now_ms(),
     To = maps:get(to, Q, Now + 1),
     From = maps:get(from, Q, 0),
@@ -297,7 +303,7 @@ collect(H, Lo, Hi, Limit, Map) ->
 %% @doc 会话汇总。
 -spec session(binary()) -> {ok, map()} | not_found.
 session(Sid) ->
-    flush(),
+    flush(logs),
     case bitcask:get(h(sessions), lg_store_keys:session_key(Sid)) of
         {ok, V} -> {ok, binary_to_term(V)};
         not_found -> not_found
@@ -307,7 +313,7 @@ session(Sid) ->
 %% Q：from/to（最近活动时间，毫秒）、key_id / user_id / client（过滤）、limit、cursor（上一页的 next_cursor）
 -spec sessions(map()) -> #{items := [map()], next_cursor := binary() | null}.
 sessions(Q) ->
-    flush(),
+    flush(logs),
     Now = lg_time:now_ms(),
     {Lo0, Hi} = lg_store_keys:recent_bounds(maps:get(from, Q, 0), maps:get(to, Q, Now + 1)),
     Lo = case maps:get(cursor, Q, undefined) of
@@ -347,7 +353,7 @@ sessions(Q) ->
 %% 返回的每条日志附带 score。
 -spec search(map()) -> #{items := [log()], next_cursor := null}.
 search(#{q := Query} = Q) ->
-    flush(),
+    flush(logs),
     Limit = max(1, min(maps:get(limit, Q, ?SEARCH_DEFAULT), ?SEARCH_MAX)),
     Filter = [#{key => atom_to_binary(F), op => eq, value => V}
               || F <- [key_id, route, user_id], V <- [maps:get(F, Q, undefined)], is_binary(V)]
@@ -475,7 +481,7 @@ alert_put(#{id := Id, ts := Ts} = Alert) ->
 %% @doc 最近的告警通知记录（新 → 旧）。
 -spec alerts(pos_integer()) -> [map()].
 alerts(Limit) ->
-    flush(),
+    flush(logs),
     Fun = fun(_K, V, _Ts, _Ord, Acc) -> [binary_to_term(V) | Acc] end,
     case bitcask:range_fold(h(alerts), {undefined, undefined}, [], Fun, []) of
         {error, _} -> [];

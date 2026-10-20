@@ -40,3 +40,15 @@
 
 可以在控制台开启配置自动备份。备份会按固定间隔写入配置的备份目录，使用口令加密，
 并按保留份数滚动清理。
+
+### 安全绑定（v0.2 破坏性变更）
+
+非回环绑定地址（如 `0.0.0.0`）且 `console_auth` 为 `false` 时，网关**拒绝启动**，
+防止管理 API（凭证明文、中间件配置）在无鉴权状态下暴露到网络。
+
+迁移方式（三选一）：
+1. 启用控制台登录：设 `LITEGATE_CONSOLE_AUTH=true`，首次启动用 `LITEGATE_ADMIN_PASSWORD` 创建管理员。
+2. 改绑回环地址：设 `LITEGATE_HTTP_BIND=127.0.0.1`（反向代理/隧道转发到网关）。
+3. 明确接受风险：设 `LITEGATE_ALLOW_INSECURE_BIND=true`（仅限受信任的隔离网络）。
+
+`/health`、`/metrics`（带 token）与 `/v1`（API Key 鉴权）不受此约束，只影响管理面启动条件。

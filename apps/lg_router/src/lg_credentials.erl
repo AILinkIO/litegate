@@ -42,6 +42,7 @@ update(Id, Params) ->
                     Rec1 = Rec#lg_credential{updated_at = lg_time:now_ms()},
                     ok = lg_db:write(Rec1),
                     plan_changed(Old, Rec1),
+                    catch lg_out_rate:reset_credential(Id),
                     {ok, Rec1};
                 {error, _} = Err ->
                     Err

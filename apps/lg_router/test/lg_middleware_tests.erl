@@ -23,6 +23,7 @@ middleware_test_() ->
      [fun(C) -> ?_test(builtins(C)) end,
       fun(C) -> {timeout, 30, ?_test(plugins(C))} end,
       fun(C) -> {timeout, 60, ?_test(remote(C))} end,
+      fun(C) -> ?_test(remote_unknown_atom(C)) end,
       fun(C) -> ?_test(dry_run(C)) end]}.
 
 ensure_distributed() ->
@@ -122,6 +123,20 @@ remote(_) ->
     after
         catch peer:stop(Peer)
     end.
+
+%% T03：binary_to_existing_atom — 不存在的节点/模块不创建原子，返回 continue（放行）
+remote_unknown_atom(_) ->
+    Opts = #{<<"node">> => <<"never_connected_node@nowhere.invalid">>,
+             <<"module">> => <<"no_such_remote_mw_module_zzz">>,
+             <<"config">> => #{}, <<"events">> => false},
+    ?assertEqual(ok, lg_mw_remote:validate(Opts)),
+    AtomCount0 = erlang:system_info(atom_count),
+    Run = lg_middleware:begin_run(<<"r">>, #{route => <<"r">>, format => openai}),
+    Body = #{<<"model">> => <<"m">>, <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"hi">>}]},
+    %% 未知节点/模块：放行（continue）
+    ?assertMatch({ok, _, _}, lg_middleware:request(Run, Body)),
+    AtomCount1 = erlang:system_info(atom_count),
+    ?assert(AtomCount1 =< AtomCount0 + 1).  %% 允许 ±1（logger 等系统波动）
 
 dry_run(_) ->
     Body = #{<<"model">> => <<"m">>, <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"say BAD">>}]},

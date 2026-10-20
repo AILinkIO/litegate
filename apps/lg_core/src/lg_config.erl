@@ -11,7 +11,10 @@
 
 -include("lg_core.hrl").
 
--export([get/1, set/2, unset/1, all/0, defaults/0, data_dir/0]).
+-export([get/1, set/2, unset/1, all/0, defaults/0, data_dir/0, restart_keys/0]).
+
+-define(PT_DEFAULTS, {?MODULE, defaults}).
+-define(PT_CACHE, {?MODULE, cache}).
 
 %% @doc 已知配置项及默认值。
 -spec defaults() -> #{atom() => term()}.
@@ -73,9 +76,16 @@ defaults() ->
       otlp_endpoint => <<>>,
       otlp_headers => <<>>,
       otlp_bodies => false,
+      otlp_queue_max_bytes => 67108864,  %% 64MB
       %% OTLP 指标导出：复用 otlp_endpoint / otlp_headers，推到 /v1/metrics
       otlp_metrics_enabled => false,
       otlp_metrics_interval_ms => 60000,
+      %% 出站自适应限流（T08/T09）：429 反馈 AIMD 节流，对所有模型统一生效
+      out_rate_enabled => true,
+      out_rate_factor => 0.7,
+      out_rate_min_rpm => 6,
+      out_rate_recovery_ms => 120000,
+      out_rate_wait => queue,   %% queue（窗口滚动后放行）| fail（立即 429）
       %% 交互数据
       record_messages => true,
       log_retention_days => 30,        %% 日志、对话、索引保留天数，0 = 永久
@@ -91,34 +101,61 @@ defaults() ->
       metrics_token => <<>>,
       %% 控制台登录：false（默认，单机）时控制台与管理 API 无需登录，访问者视为管理员
       console_auth => false,
+      %% 非回环绑定且未开鉴权时默认拒绝启动；true 放行（破坏性变更，容器部署须显式设置）
+      allow_insecure_bind => false,
+      %% TLS 监听器（T13）：可与 clear 并存；启用时证书文件必须可读
+      tls_enabled => false,
+      tls_port => 443,
+      tls_cert_file => <<>>,
+      tls_key_file => <<>>,
       session_ttl_ms => 7 * 24 * 3600 * 1000
      }.
 
+%% @doc 仅在启动时读取的配置项（T13：控制台显示"需重启生效"徽标）。
+-spec restart_keys() -> [atom()].
+restart_keys() ->
+    [data_dir, http_port, http_bind, max_body_bytes, tls_enabled, tls_port,
+     tls_cert_file, tls_key_file].
+
+%% 两级缓存：persistent_term 缓存 defaults（避免每次重建 ~60 项 map）+ 已解析值 map（避免 mnesia dirty_read）
+%% set/unset 只移除对应 key 的缓存条目，其他 key 的缓存不受影响
+%% 命中缓存零 mnesia 访问；miss 走 resolve 后回填
 -spec get(atom()) -> term().
 get(Key) ->
-    case maps:find(Key, defaults()) of
-        {ok, Default} -> element(1, resolve(Key, Default));
+    case maps:find(Key, pterm_defaults()) of
+        {ok, Default} ->
+            Cache = persistent_term:get(?PT_CACHE, #{}),
+            case maps:find(Key, Cache) of
+                {ok, V} -> V;
+                error ->
+                    V = element(1, resolve(Key, Default)),
+                    persistent_term:put(?PT_CACHE, Cache#{Key => V}),
+                    V
+            end;
         error -> error({unknown_config, Key})
     end.
 
 %% @doc 写入运行参数层。
 -spec set(atom(), term()) -> ok.
 set(Key, Value) ->
-    maps:is_key(Key, defaults()) orelse error({unknown_config, Key}),
-    mnesia:dirty_write(#lg_setting{key = Key, value = Value, updated_at = lg_time:now_ms()}).
+    maps:is_key(Key, pterm_defaults()) orelse error({unknown_config, Key}),
+    mnesia:dirty_write(#lg_setting{key = Key, value = Value, updated_at = lg_time:now_ms()}),
+    invalidate(Key).
 
 %% @doc 删除运行参数，回落到下层。
 -spec unset(atom()) -> ok.
 unset(Key) ->
-    mnesia:dirty_delete(lg_setting, Key).
+    mnesia:dirty_delete(lg_setting, Key),
+    invalidate(Key).
 
 %% @doc 所有配置项的生效值及来源。
 -spec all() -> [#{key := atom(), value := term(), source := runtime | env | app | default}].
 all() ->
+    Defs = pterm_defaults(),
     [begin
          {V, Src} = resolve(K, D),
          #{key => K, value => V, source => Src}
-     end || {K, D} <- lists:sort(maps:to_list(defaults()))].
+     end || {K, D} <- lists:sort(maps:to_list(Defs))].
 
 %% @doc 数据根目录；mnesia 启动前就要用，不走运行参数层。
 -spec data_dir() -> file:filename().
@@ -166,3 +203,18 @@ convert(S, D) when is_integer(D) -> list_to_integer(S);
 convert(S, D) when is_boolean(D) -> lists:member(string:lowercase(S), ["1", "true", "yes", "on"]);
 convert(S, D) when is_binary(D) -> unicode:characters_to_binary(S);
 convert(S, _) -> S.
+
+%% 惰性初始化：首次调用时把 defaults() 写入 persistent_term（原子读，后续零开销）
+pterm_defaults() ->
+    case persistent_term:get(?PT_DEFAULTS, undefined) of
+        undefined ->
+            D = defaults(),
+            persistent_term:put(?PT_DEFAULTS, D),
+            D;
+        D -> D
+    end.
+
+%% 只移除对应 key 的缓存条目（persistent_term:put 触发全局扫描，但 set/unset 低频）
+invalidate(Key) ->
+    Cache = persistent_term:get(?PT_CACHE, #{}),
+    persistent_term:put(?PT_CACHE, maps:remove(Key, Cache)).

@@ -76,6 +76,15 @@ patience_wait(Ms, Idle) ->
 
 %% 凭证有并发上限时先占名额：满了且后面还有未满的候选 → 跳过（不冷却）；否则排队等待
 attempt_plan([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out) ->
+    %% T09：先检查出站速率（节流），再检查并发
+    case lg_out_rate:allow(lg_router_plan:tkey(T)) of
+        {throttle, RetryMs} ->
+            rate_throttled([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out, RetryMs);
+        ok ->
+            attempt_plan_conc([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out)
+    end.
+
+attempt_plan_conc([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out) ->
     case lg_conc:max_of(Cred) of
         0 ->
             attempt_held([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out);
@@ -103,6 +112,44 @@ attempt_plan([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out) ->
                                      (with_target(Out1, T, Cred))#{attempts => maps:get(attempts, Out1) ++ [Info]}}
                             end
                     end
+            end
+    end.
+
+%% T09：目标被自适应节流 — 有候选 → 跳过（busy attempt）；唯一候选 → 快速失败 429
+rate_throttled([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out, RetryMs) ->
+    CId = Cred#lg_credential.id,
+    Info = #{route => RouteName, credential => CId, upstream_model => maps:get(upstream_model, T),
+             started_at => lg_time:now_ms(), duration_ms => 0, ok => false, busy => true},
+    Skip = lists:any(fun({_, _, C2}) -> not lg_router_plan:conc_full(C2) end, Rest),
+    case Skip of
+        true ->
+            lg_metrics:inc(litegate_out_throttled_total,
+                           [{credential, CId}, {model, maps:get(upstream_model, T)}]),
+            attempt(Rest, Client, Req, Ctx, Call, Out#{attempts => maps:get(attempts, Out) ++ [Info]});
+        false ->
+            lg_metrics:inc(litegate_out_throttled_total,
+                           [{credential, CId}, {model, maps:get(upstream_model, T)}]),
+            %% T11：queue 策略（默认）等待窗口滚动；fail 策略立即 429
+            case lg_config:get(out_rate_wait) of
+                queue ->
+                    Idle = maps:get(idle, Ctx, undefined),
+                    T0 = lg_time:now_ms(),
+                    case lg_out_rate:wait(lg_router_plan:tkey(T), RetryMs, Idle) of
+                        ok ->
+                            Out1 = Out#{queued_ms => maps:get(queued_ms, Out, 0) + lg_time:now_ms() - T0},
+                            attempt_plan_conc([{RouteName, T, Cred}], Client, Req, Ctx, Call,
+                                              Out1#{attempts => maps:get(attempts, Out1) ++ [Info]});
+                        {error, timeout} ->
+                            {error, #{kind => rate_limit, status => 429, retryable => false,
+                                      retry_after_ms => RetryMs, upstream => undefined,
+                                      message => <<"Upstream target throttled; timed out waiting in queue">>},
+                             (with_target(Out, T, Cred))#{attempts => maps:get(attempts, Out) ++ [Info]}}
+                    end;
+                _ ->
+                    {error, #{kind => rate_limit, status => 429, retryable => false,
+                              retry_after_ms => RetryMs, upstream => undefined,
+                              message => <<"Upstream target throttled by adaptive rate limiter">>},
+                     (with_target(Out, T, Cred))#{attempts => maps:get(attempts, Out) ++ [Info]}}
             end
     end.
 
@@ -135,6 +182,7 @@ attempt_held([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out0) ->
     LiveInfo = #{route => RouteName, credential => Cred#lg_credential.id,
                  credential_name => Cred#lg_credential.name, upstream_model => maps:get(upstream_model, T)},
     lg_live:attempt_start(LiveId, LiveInfo),
+    lg_out_rate:record(lg_router_plan:tkey(T)),
     Res = Call(Client, Req, Target),
     lg_live:attempt_end(LiveId, LiveInfo#{ok => element(1, Res) =:= ok, duration_ms => lg_time:now_ms() - T0,
                                           kind => case Res of {error, #{kind := EK0}} -> EK0; _ -> null end}),
@@ -155,8 +203,11 @@ attempt_held([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out0) ->
     case Outcome of
         QK when QK =:= quota; QK =:= credit -> lg_plan:exhausted(Cred#lg_credential.id),
                                                gen_server:cast(lg_balance, {refresh, [Cred#lg_credential.id]});
-        rate_limit -> lg_plan:quota_error(Cred#lg_credential.id);
-        ok -> lg_cooldown:succeeded(lg_router_plan:tkey(T)), lg_plan:touched(Cred#lg_credential.id),
+        rate_limit -> lg_plan:quota_error(Cred#lg_credential.id),
+                      lg_out_rate:on_rate_limit(lg_router_plan:tkey(T),
+                          case Res of {error, #{retry_after_ms := RA}} when is_integer(RA), RA > 0 -> RA; _ -> undefined end);
+        ok -> lg_cooldown:succeeded(lg_router_plan:tkey(T)), lg_out_rate:on_success(lg_router_plan:tkey(T)),
+              lg_plan:touched(Cred#lg_credential.id),
               lg_balance:touched(Cred#lg_credential.id),
               lg_unfit:clear_retired(Cred#lg_credential.id, maps:get(upstream_model, T));
         _ -> lg_plan:touched(Cred#lg_credential.id)

@@ -162,11 +162,21 @@ count(Key) ->
     end.
 
 text_tokens(Text) ->
-    %% CJK 统一表意文字、假名、谚文按每字 1 token
-    Cjk = length([C || C <- unicode:characters_to_list(Text),
-                       (C >= 16#3040 andalso C =< 16#9FFF) orelse (C >= 16#AC00 andalso C =< 16#D7AF)
-                       orelse (C >= 16#F900 andalso C =< 16#FAFF)]),
-    Cjk + (string:length(Text) - Cjk + 3) div 4.
+    %% CJK 统一表意文字、假名、谚文按每字 1 token（T14：binary 逐码点扫描）
+    {Cjk, Total} = scan_text(Text, 0, 0),
+    Cjk + (Total - Cjk + 3) div 4.
+
+scan_text(<<C/utf8, Rest/binary>>, Cjk, Total) ->
+    IsCjk = (C >= 16#3040 andalso C =< 16#9FFF) orelse (C >= 16#AC00 andalso C =< 16#D7AF)
+            orelse (C >= 16#F900 andalso C =< 16#FAFF),
+    case IsCjk of
+        true -> scan_text(Rest, Cjk + 1, Total + 1);
+        false -> scan_text(Rest, Cjk, Total + 1)
+    end;
+scan_text(<<_, Rest/binary>>, Cjk, Total) ->
+    scan_text(Rest, Cjk, Total + 1);
+scan_text(<<>>, Cjk, Total) ->
+    {Cjk, Total}.
 
 bump(Key, N) ->
     ets:update_counter(?RATE, Key, N, {Key, 0}).

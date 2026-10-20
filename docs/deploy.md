@@ -70,3 +70,41 @@ mnesia 表结构升级在启动时自动执行（`lg_schema`）；数据目录�
   或用防火墙 / 反向代理限制 `/console` 与 `/api` 的访问来源。
 - 节点名固定为 `litegate@127.0.0.1`（mnesia 数据与节点名绑定，主机名变化不影响）；Erlang 分布式端口与 epmd
   只监听本机，cookie 自动生成在 `$HOME/.erlang.cookie`。
+
+## 多实例部署
+
+当前所有限额与状态均为**节点本地**（单节点内存），横向扩容时全局配额 ≈ N × 配置值。
+
+### Per-node 状态清单
+
+| 状态 | 模块 | 存储位置 | 扩容行为 |
+|---|---|---|---|
+| 入站 RPM/TPM/并发 | `lg_limiter` | ETS | 每节点独立计数，全局 ≈ N × 配置值 |
+| 上游并发闸 | `lg_conc` | ETS | 每节点独立排队，上游实际并发 ≈ N × max_concurrency |
+| 预算计数 | `lg_budget` | ETS（内存累加） | 每节点独立累计，重启清零 |
+| 冷却表 | `lg_cooldown` | ETS | 每节点独立（同一上游在一节点冷却不影响其他节点） |
+| 会话粘性 | `lg_affinity` | ETS | 每节点独立（负载均衡无亲和时粘性失效） |
+| 出站节流 Cap | `lg_out_rate` | ETS | 每节点独立学习，上游实际承受 ≈ N × Cap |
+| 响应缓存 | `lg_cache` | bitcask | 每节点独立目录，不共享 |
+| 登录限流 | `lg_login_guard` | ETS | 每节点独立 |
+| 控制台会话 | `lg_session` | mnesia | 可集群同步（mnesia 配置表）；每节点独立 token |
+
+### 配置折算指引
+
+N 实例部署时，每节点入站限流建议配 1/N（防止上游实际承受 N × 原值）；
+上游 `max_concurrency` 同理除以 N。出站节流 Cap 每节点独立学习，无需手动折算。
+
+### 数据目录
+
+bitcask `data_dir` **不可多节点共享**（每实例独立目录 + 本地磁盘）。
+mnesia 配置表（路由、凭证、API Key 等）可通过 `mnesia:change_config(+extra_db_nodes)` 集群同步。
+
+### 负载均衡注意事项
+
+- 上游会话粘性依赖网关到客户端的会话 ID（`X-LiteGate-Session` 等），
+  前置 LB 需按此 header 做 session affinity，否则跨节点粘性失效。
+- WebSocket / SSE 长连接需 LB 支持长连接超时（大于 `upstream_timeout_ms`）。
+
+### 全局限流（路线图）
+
+跨节点全局计数属路线图（需外部计数器后端如 Redis），当前版本不承诺。

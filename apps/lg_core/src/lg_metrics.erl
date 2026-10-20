@@ -47,7 +47,11 @@ defs() ->
       litegate_otlp_exported_total =>
           {counter, <<"Spans exported over OTLP">>, #{}},
       litegate_otlp_dropped_total =>
-          {counter, <<"Spans dropped by the OTLP exporter (queue full or export failed)">>, #{}}}.
+          {counter, <<"Spans dropped by the OTLP exporter (queue full or export failed)">>, #{}},
+      litegate_otlp_stripped_total =>
+          {counter, <<"Spans stripped of body content by the OTLP exporter (queue above 50% byte cap)">>, #{}},
+      litegate_out_throttled_total =>
+          {counter, <<"Requests throttled by the adaptive outbound rate limiter">>, #{}}}.
 
 %%====================================================================
 %% API
@@ -102,8 +106,9 @@ register_gauge(Name, Help, Fun) ->
 -spec render() -> iodata().
 render() ->
     Rows = ets:tab2list(?TAB),
+    RowMap = maps:from_list(Rows),
     Defs = defs(),
-    Static = [render_metric(Name, Def, Rows) || Name := Def <- Defs, Name =/= litegate_active_streams],
+    Static = [render_metric(Name, Def, RowMap) || Name := Def <- Defs, Name =/= litegate_active_streams],
     Tracked = [header(litegate_active_streams, gauge, element(2, maps:get(litegate_active_streams, Defs))),
                sample(litegate_active_streams, [], ets:info(?TRACK, size))],
     Callbacks = [begin
@@ -154,10 +159,11 @@ handle_info(_Msg, S) ->
 -spec snapshot() -> map().
 snapshot() ->
     Rows = ets:tab2list(?TAB),
+    RowMap = maps:from_list(Rows),
     Defs = defs(),
     Counters = [{N, L, scale(V, scale_of(Defs, N))}
                 || {{N, L}, V} <- Rows, is_map_key(N, Defs), is_counter(maps:get(N, Defs))],
-    Hist = lists:append([hist_series(Name, Def, Rows)
+    Hist = lists:append([hist_series(Name, Def, RowMap)
                          || {Name, {histogram, _, _} = Def} <- maps:to_list(Defs)]),
     Gauges = [{litegate_active_streams, [], ets:info(?TRACK, size)}]
              ++ lists:append(
@@ -175,29 +181,29 @@ scale_of(Defs, N) ->
         #{N := {_, _, #{scale := S}}} -> S;
         _ -> 1
     end.
-hist_series(Name, {histogram, _, #{buckets := Buckets} = Opts}, Rows) ->
+hist_series(Name, {histogram, _, #{buckets := Buckets} = Opts}, RowMap) ->
     Scale = maps:get(scale, Opts, 1),
-    Series = lists:usort([L || {{N, L, count}, _} <- Rows, N =:= Name]),
-    [{Name, L, hist_point(Name, L, Buckets, Scale, Rows)} || L <- Series].
+    Series = lists:usort([L || {{N, L, count}, _} <- maps:to_list(RowMap), N =:= Name]),
+    [{Name, L, hist_point(Name, L, Buckets, Scale, RowMap)} || L <- Series].
 
-hist_point(Name, L, Buckets, Scale, Rows) ->
-    Get = fun(K) -> case lists:keyfind({Name, L, K}, 1, Rows) of {_, V} -> V; false -> 0 end end,
-    GetB = fun(Le) -> case lists:keyfind({Name, L, bucket, Le}, 1, Rows) of {_, V} -> V; false -> 0 end end,
+hist_point(Name, L, Buckets, Scale, RowMap) ->
+    Get = fun(K) -> maps:get({Name, L, K}, RowMap, 0) end,
+    GetB = fun(Le) -> maps:get({Name, L, bucket, Le}, RowMap, 0) end,
     {BucketsC, _} = lists:mapfoldl(fun(Le, Acc) -> Acc1 = Acc + GetB(Le), {{Le, Acc1}, Acc1} end, 0,
                                    Buckets ++ [inf]),
     #{count => Get(count), sum => scale(Get(sum), Scale), buckets => BucketsC}.
 
-render_metric(Name, {counter, Help, Opts}, Rows) ->
+render_metric(Name, {counter, Help, Opts}, RowMap) ->
     Scale = maps:get(scale, Opts, 1),
     [header(Name, counter, Help) |
-     [sample(Name, L, scale(V, Scale)) || {{N, L}, V} <- Rows, N =:= Name]];
-render_metric(Name, {histogram, Help, #{buckets := Buckets} = Opts}, Rows) ->
+     [sample(Name, L, scale(V, Scale)) || {{N, L}, V} <- maps:to_list(RowMap), N =:= Name]];
+render_metric(Name, {histogram, Help, #{buckets := Buckets} = Opts}, RowMap) ->
     Scale = maps:get(scale, Opts, 1),
-    Series = lists:usort([L || {{N, L, count}, _} <- Rows, N =:= Name]),
+    Series = lists:usort([L || {{N, L, count}, _} <- maps:to_list(RowMap), N =:= Name]),
     [header(Name, histogram, Help) |
      [begin
-          Get = fun(K) -> case lists:keyfind({Name, L, K}, 1, Rows) of {_, V} -> V; false -> 0 end end,
-          GetB = fun(Le) -> case lists:keyfind({Name, L, bucket, Le}, 1, Rows) of {_, V} -> V; false -> 0 end end,
+          Get = fun(K) -> maps:get({Name, L, K}, RowMap, 0) end,
+          GetB = fun(Le) -> maps:get({Name, L, bucket, Le}, RowMap, 0) end,
           %% 桶按累计值导出
           {Lines, _} = lists:mapfoldl(
                          fun(Le, Acc) ->

@@ -21,6 +21,7 @@
 -define(CACHE_COLD_MS, 5 * 60000).
 -define(WINDOW_FULL, 98).
 -define(HALF_LIFE_MS, 3600000).
+-define(TOKEN_MAX_AGE_MS, 30 * 86400000).  %% 30 天
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
@@ -184,6 +185,10 @@ handle_info(sweep, S) ->
     Old = lg_time:now_ms() - ?IDLE_MS,
     _ = ets:select_delete(?TAB, [{{'_', #{last_at => '$1'}}, [{'<', '$1', Old}], [true]}]),
     _ = ets:select_delete(?TAB, [{{{intent, '_'}, '_', '$1'}, [{'<', '$1', lg_time:now_ms()}], [true]}]),
+    %% 清理 30 天前的 token 条目（半衰期 1 小时，30 天后值已趋近零，没有保留意义）
+    TokenOld = lg_time:now_ms() - ?TOKEN_MAX_AGE_MS,
+    _ = ets:select_delete(?TAB, [{{{tokens, '_'}, '_', '$1'}, [{'<', '$1', TokenOld}], [true]}]),
+    %% {{turn, Route}, N} 有界（条目数 = 路由数），无需清扫
     _ = erlang:send_after(60000, self(), sweep),
     {noreply, S};
 handle_info(_Msg, S) ->

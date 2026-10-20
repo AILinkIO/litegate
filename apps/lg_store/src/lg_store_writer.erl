@@ -7,7 +7,7 @@
 -module(lg_store_writer).
 -behaviour(gen_server).
 
--export([start_link/0, record/3, session/2, flush/0, delete/2, put/3, merge_session/2]).
+-export([start_link/0, record/3, session/2, flush/0, flush/1, delete/2, put/3, merge_session/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(BATCH_MS, 50).
@@ -65,7 +65,12 @@ put(Cask, Key, Value) ->
 %% @doc 把缓冲的日志与用量全部落盘（查询前调用，保证读到最新数据）。
 -spec flush() -> ok.
 flush() ->
-    gen_server:call(?MODULE, flush, 30000).
+    flush(all).
+
+%% @doc 按范围落盘：logs 只写日志与会话批次，all 另做用量合并。
+-spec flush(logs | all) -> ok.
+flush(Scope) ->
+    gen_server:call(?MODULE, {flush, Scope}, 30000).
 
 %%====================================================================
 %% gen_server
@@ -87,7 +92,9 @@ init([]) ->
             {stop, Reason}
     end.
 
-handle_call(flush, _From, S) ->
+handle_call({flush, logs}, _From, S) ->
+    {reply, ok, flush_logs(S)};
+handle_call({flush, all}, _From, S) ->
     {reply, ok, flush_usage(flush_logs(S))};
 handle_call({delete, Cask, Keys}, _From, #st{handles = H} = S) ->
     S1 = flush_usage(flush_logs(S)),

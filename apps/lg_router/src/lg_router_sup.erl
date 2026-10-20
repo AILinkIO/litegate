@@ -14,6 +14,7 @@ init([]) ->
                 #{id => lg_cooldown, start => {lg_cooldown, start_link, []}},
                 #{id => lg_conc, start => {lg_conc, start_link, []}},
                 #{id => lg_affinity, start => {lg_affinity, start_link, []}},
+                #{id => lg_out_rate, start => {lg_out_rate, start_link, []}},
                 #{id => lg_live_pg, start => {pg, start_link, [lg_live_pg]}},
                 #{id => lg_live, start => {lg_live, start_link, []}},
                 #{id => lg_middleware, start => {lg_middleware, start_link, []}},

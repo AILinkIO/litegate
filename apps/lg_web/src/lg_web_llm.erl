@@ -110,9 +110,14 @@ call_prepared(F, Kind, Model, Body0, Ctx0, Req) ->
     case prepare(F, Body0, Ctx0) of
         {ok, Body1, Ctx1} ->
             {Body, Ctx} = redact(F, Body1, Ctx1),
-            case Kind =:= chat andalso maps:get(<<"stream">>, Body, false) of
+            WantStream = maps:get(<<"stream">>, Body, false) =:= true,
+            case lg_provider:streamable(Kind) andalso WantStream of
                 true -> stream(F, Body, Ctx, Req);
-                _ -> sync(F, Body, Ctx, Req)
+                false when WantStream ->
+                    %% T12：非 chat 端点 stream:true 被忽略，整包返回（OpenAI SDK 兼容性）
+                    sync(F, Body, Ctx#{stream_ignored => true}, Req);
+                false ->
+                    sync(F, Body, Ctx, Req)
             end;
         {error, Msg} ->
             lg_live:request_end(maps:get(id, Ctx0, undefined), #{route => Model, status => 400}),

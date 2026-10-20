@@ -5,7 +5,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, check/2, failure/2, success/2, reset/0]).
+-export([start_link/0, check/2, failure/2, success/2, reset/0, sweep/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(TAB, ?MODULE).
@@ -13,6 +13,8 @@
 -define(THRESHOLD, 3).
 -define(BASE_COOLDOWN_MS, 1000).
 -define(MAX_COOLDOWN_MS, 15 * 60000).
+-define(SWEEP_MS, 60000).
+-define(DAY_MS, 86400000).
 
 %% @doc 冷却期内拒绝登录；返回剩余秒数（至少 1 秒）。
 -spec check(binary(), inet:ip_address() | undefined) -> ok | {error, pos_integer()}.
@@ -81,7 +83,8 @@ start_link() ->
 init([]) ->
     _ = ets:new(?TAB, [named_table, public, {write_concurrency, true},
                        {read_concurrency, true}]),
-    {ok, []}.
+    _ = erlang:send_after(?SWEEP_MS, self(), sweep),
+    {ok, #{last_session_sweep => 0}}.
 
 handle_call(reset, _From, State) ->
     true = ets:delete_all_objects(?TAB),
@@ -92,8 +95,32 @@ handle_call(_Call, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info(sweep, #{last_session_sweep := LastSessionSweep} = State) ->
+    sweep(),
+    %% 每日一次顺带清理 mnesia 过期会话（T02）
+    Now = lg_time:now_ms(),
+    State1 = case Now - LastSessionSweep >= ?DAY_MS of
+                 true ->
+                     _ = catch lg_users:sweep_expired_sessions(),
+                     State#{last_session_sweep => Now};
+                 false ->
+                     State
+             end,
+    _ = erlang:send_after(?SWEEP_MS, self(), sweep),
+    {noreply, State1};
 handle_info(_Info, State) ->
     {noreply, State}.
+
+%% 清除「窗口已过且不在冷却期」的条目：攻击者用随机用户名+IP 撞登录接口不会再使表无界增长
+sweep() ->
+    Now = lg_time:now_ms(),
+    ets:select_delete(?TAB,
+        [{{'_', '_', '$1', '$2'},
+          [{'andalso',
+            {'>=', Now, {'+', '$1', ?WINDOW_MS}},
+            {'=<', '$2', Now}}],
+          [true]}]),
+    ok.
 
 expired([], _Now) -> true;
 expired([{_, _Count, Since, _Until}], Now) -> Now >= Since + ?WINDOW_MS.

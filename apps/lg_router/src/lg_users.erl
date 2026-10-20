@@ -7,7 +7,8 @@
 -include_lib("lg_core/include/lg_core.hrl").
 
 -export([create/1, update/2, delete/1, get/1, list/0, to_map/1,
-         login/2, login/3, session/1, logout/1, ensure_admin/0]).
+         login/2, login/3, session/1, logout/1, ensure_admin/0,
+         sweep_expired_sessions/0]).
 
 -define(MIN_PASSWORD, 8).
 
@@ -184,6 +185,15 @@ ensure_admin() ->
 %%====================================================================
 %% 内部函数
 %%====================================================================
+
+%% @doc 清理过期的 mnesia 会话记录（由 lg_login_guard 的定时清扫调用）。
+%% 正常读取时也会惰性删除过期会话；这里定期清扫防止长期无人读取的过期行驻留。
+-spec sweep_expired_sessions() -> ok.
+sweep_expired_sessions() ->
+    Now = lg_time:now_ms(),
+    _ = [lg_db:delete(lg_session, H)
+         || #lg_session{hash = H, expires_at = Exp} <- lg_db:all(lg_session), Exp =< Now],
+    ok.
 
 drop_sessions(UserId) ->
     [lg_db:delete(lg_session, H)

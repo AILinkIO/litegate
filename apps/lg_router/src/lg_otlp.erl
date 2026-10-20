@@ -20,6 +20,9 @@
 -define(INTERVAL_MS, 1000).
 -define(MAX_QUEUE, 10000).
 -define(MAX_BODY, 262144).
+-define(FIXED_SPAN_BYTES, 2048).
+-define(BODY_KEYS, [<<"langfuse.trace.input">>, <<"langfuse.trace.output">>,
+                    <<"langfuse.observation.input">>, <<"langfuse.observation.output">>]).
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
@@ -276,18 +279,17 @@ send(Spans) ->
 
 init([]) ->
     _ = erlang:send_after(?INTERVAL_MS, self(), tick),
-    {ok, #{queue => [], len => 0}}.
+    {ok, #{queue => [], len => 0, bytes => 0}}.
 
 handle_call(flush, _From, S) ->
     {Res, S1} = do_flush(S),
     {reply, Res, S1}.
 
-handle_cast({spans, New}, #{len := Len} = S) when Len + length(New) > ?MAX_QUEUE ->
-    lg_metrics:inc(litegate_otlp_dropped_total, [], length(New)),
-    {noreply, S};
-handle_cast({spans, New}, #{queue := Q, len := Len} = S) ->
-    S1 = S#{queue => lists:reverse(New, Q), len => Len + length(New)},
-    case Len + length(New) >= ?BATCH of
+handle_cast({spans, New}, S) ->
+    MaxBytes = lg_config:get(otlp_queue_max_bytes),
+    Sized = [{Sp, span_size(Sp)} || Sp <- New],
+    S1 = enqueue(Sized, MaxBytes, S),
+    case maps:get(len, S1) >= ?BATCH of
         true -> {_, S2} = do_flush(S1), {noreply, S2};
         false -> {noreply, S1}
     end.
@@ -301,8 +303,8 @@ handle_info(_Msg, S) ->
 
 do_flush(#{len := 0} = S) ->
     {ok, S};
-do_flush(#{queue := Q, len := Len} = S) ->
-    Spans = lists:reverse(Q),
+do_flush(#{queue := Q, len := Len} = S) when Len > 0 ->
+    Spans = [Sp || {Sp, _} <- lists:reverse(Q)],
     Res = case send(Spans) of
               ok -> ok;
               {error, _} -> send(Spans)          %% 重试一次
@@ -313,4 +315,48 @@ do_flush(#{queue := Q, len := Len} = S) ->
             lg_metrics:inc(litegate_otlp_dropped_total, [], Len),
             logger:warning("otlp: export of ~b spans failed: ~0p", [Len, R])
     end,
-    {Res, S#{queue => [], len => 0}}.
+    {Res, S#{queue => [], len => 0, bytes => 0}}.
+
+%% 按字节封顶入队：超 50% 剥 body、超上限（或条数上限）丢弃
+enqueue(Sized, MaxBytes, #{queue := Q, len := Len, bytes := Bytes} = S) ->
+    Threshold = MaxBytes bsr 1,
+    {Q1, Len1, Bytes1, Dropped, Stripped} =
+        lists:foldl(
+            fun({Sp, Sz}, {AQ, ALen, ABytes, ADrop, AStrip}) ->
+                {Sp1, Sz1, DidStrip} =
+                    case ABytes + Sz > Threshold of
+                        true ->
+                            S2 = strip_body(Sp),
+                            case span_size(S2) of
+                                Sz3 when Sz3 < Sz -> {S2, Sz3, true};
+                                _ -> {Sp, Sz, false}
+                            end;
+                        false ->
+                            {Sp, Sz, false}
+                    end,
+                case ABytes + Sz1 > MaxBytes orelse ALen >= ?MAX_QUEUE of
+                    true ->
+                        {AQ, ALen, ABytes, ADrop + 1, AStrip};
+                    false ->
+                        {[{Sp1, Sz1} | AQ], ALen + 1, ABytes + Sz1, ADrop, AStrip + DidStrip}
+                end
+            end,
+            {Q, Len, Bytes, 0, 0},
+            Sized),
+    Dropped > 0 andalso lg_metrics:inc(litegate_otlp_dropped_total, [], Dropped),
+    Stripped > 0 andalso lg_metrics:inc(litegate_otlp_stripped_total, [], Stripped),
+    S#{queue => Q1, len => Len1, bytes => Bytes1}.
+
+%% span 字节数估算：body 属性实际字节数 + 固定开销
+span_size(#{attributes := Attrs}) ->
+    Body = lists:sum([byte_size(V) || #{key := K, value := #{stringValue := V}} <- Attrs,
+                                      is_binary(V), lists:member(K, ?BODY_KEYS)]),
+    ?FIXED_SPAN_BYTES + Body;
+span_size(_) ->
+    ?FIXED_SPAN_BYTES.
+
+%% 剥离 body 属性（langfuse.trace.input/output、langfuse.observation.input/output）
+strip_body(#{attributes := Attrs} = Span) ->
+    Span#{attributes => [A || A = #{key := K} <- Attrs, not lists:member(K, ?BODY_KEYS)]};
+strip_body(Span) ->
+    Span.

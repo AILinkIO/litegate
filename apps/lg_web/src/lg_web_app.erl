@@ -4,6 +4,7 @@
 -export([start/2, prep_stop/1, stop/1]).
 
 -define(LISTENER, lg_http_listener).
+-define(TLS_LISTENER, lg_https_listener).
 
 start(_StartType, _StartArgs) ->
     %% 仅在启用控制台登录时创建初始管理员（单机模式无需账号）
@@ -22,10 +23,12 @@ start(_StartType, _StartArgs) ->
              idle_timeout => lg_config:get(upstream_timeout_ms) + 60000},
     TransOpts = #{socket_opts => [{ip, Bind}, {port, Port}],
                   num_conns_sups => 1, shutdown => 5000},
+    %% T10：非回环绑定 + 未开鉴权 + 未显式放行 → 拒绝启动（防管理面裸奔）
+    ok = check_bind_security(Bind),
     case cowboy:start_clear(?LISTENER, TransOpts, Opts) of
         {ok, _} ->
             logger:notice("LiteGate listening on port ~b", [ranch:get_port(?LISTENER)]),
-            insecure_warning(Bind),
+            maybe_start_tls(Bind, Opts),
             lg_web_sup:start_link();
         {error, Reason} ->
             {error, {listen, Port, Reason}}
@@ -38,7 +41,34 @@ prep_stop(State) ->
 
 stop(_State) ->
     _ = cowboy:stop_listener(?LISTENER),
+    _ = cowboy:stop_listener(?TLS_LISTENER),
     lg_shutdown:end_drain().
+
+%% T13：TLS 监听器（可与 clear 并存）
+maybe_start_tls(Bind, Opts) ->
+    case lg_config:get(tls_enabled) of
+        true ->
+            Port = lg_config:get(tls_port),
+            Cert = lg_config:get(tls_cert_file),
+            Key = lg_config:get(tls_key_file),
+            Cert =/= <<>> andalso Key =/= <<>>
+                orelse erlang:error({tls_config_missing, <<"tls_cert_file and tls_key_file are required">>}),
+            filelib:is_file(Cert) orelse erlang:error({tls_cert_not_found, Cert}),
+            filelib:is_file(Key) orelse erlang:error({tls_key_not_found, Key}),
+            TransOpts = #{socket_opts => [{ip, Bind}, {port, Port},
+                                          {certfile, binary_to_list(Cert)},
+                                          {keyfile, binary_to_list(Key)}],
+                          num_conns_sups => 1, shutdown => 5000},
+            case cowboy:start_tls(?TLS_LISTENER, TransOpts, Opts) of
+                {ok, _} ->
+                    logger:notice("LiteGate TLS listening on port ~b", [Port]),
+                    ok;
+                {error, Reason} ->
+                    erlang:error({tls_listen, Port, Reason})
+            end;
+        false ->
+            ok
+    end.
 
 bind(Value) when is_binary(Value); is_list(Value) ->
     case inet:parse_address(binary_to_list(Value)) of
@@ -47,10 +77,25 @@ bind(Value) when is_binary(Value); is_list(Value) ->
     end;
 bind(Ip) when is_tuple(Ip) -> Ip.
 
-insecure_warning(Bind) ->
+%% 非回环地址 + console_auth 关 + 未设 allow_insecure_bind → 启动失败并给出迁移指引
+check_bind_security(Bind) ->
     case lg_config:get(console_auth) =:= false andalso not loopback(Bind) of
-        true -> logger:warning("console auth is disabled and HTTP is bound to a non-loopback address");
-        false -> ok
+        true ->
+            case lg_config:get(allow_insecure_bind) of
+                true ->
+                    logger:warning("console auth is disabled and HTTP is bound to a non-loopback address (allow_insecure_bind=true)"),
+                    ok;
+                false ->
+                    logger:error(
+                      "Refusing to start: HTTP is bound to a non-loopback address (~s) "
+                      "but console_auth is disabled. Either enable console_auth (set to true "
+                      "and create an admin user), bind to 127.0.0.1, or explicitly set "
+                      "allow_insecure_bind=true to accept the risk.",
+                      [inet:ntoa(Bind)]),
+                    erlang:error({insecure_bind, Bind})
+            end;
+        false ->
+            ok
     end.
 
 loopback({127, _, _, _}) -> true;

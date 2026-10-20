@@ -30,6 +30,7 @@ credential_spec() ->
     #{<<"responses_api">> => {responses_api, boolean},
       <<"responses_base_url">> => {responses_base_url, {custom, fun http_url/1}},
       <<"max_concurrency">> => {max_concurrency, non_neg_integer},
+      <<"max_rpm">> => {max_rpm, non_neg_integer},
       <<"structured_output">> => {structured_output, {custom, fun(V) -> V =:= <<"native">> orelse V =:= <<"tool">> end}},
       <<"plan">> => {plan, {custom, fun lg_plan:validate/1}},
       <<"balance">> => {balance, {custom, fun lg_balance:validate/1}},

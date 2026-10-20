@@ -13,7 +13,8 @@
 -include_lib("lg_core/include/lg_core.hrl").
 
 -export([chat/3, stream_open/3, stream_next/1, stream_abort/1, stream_set_idle/2, error_frame/2, upstream_request/3,
-         embeddings/2, count_tokens/2, stream_output_started/1, probe/2, auth_headers/4]).
+         embeddings/2, count_tokens/2, stream_output_started/1, probe/2, auth_headers/4,
+         streamable/1]).
 
 %% 供 lg_provider_stream 组合调用；不属于公共 provider API
 -export([with_unfit_retry/2, with_beta_retry/2, sent_error/2, responses_passthrough/1, responses_url/1,
@@ -33,6 +34,13 @@
 %%====================================================================
 %% 非流式
 %%====================================================================
+
+%% @doc 该请求类型是否支持流式输出（T12）。
+%% 目前仅 chat 走 SSE 管道；embeddings/images/speech 上游本身不支持流式，
+%% 请求中的 stream:true 标记 stream_ignored 供控制台展示。
+-spec streamable(atom()) -> boolean().
+streamable(chat) -> true;
+streamable(_) -> false.
 
 -spec chat(format(), map(), target()) ->
           {ok, iodata(), result()} | {error, lg_llm_error:error()}.

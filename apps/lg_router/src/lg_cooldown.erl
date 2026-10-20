@@ -12,13 +12,14 @@
 -behaviour(gen_server).
 
 -export([start_link/0, mark/2, cooling/1, clear/0, cooling_count/0, remaining_ms/1, reset/1,
-         succeeded/1, recovered/1, recovered/2, info/1, duration/3]).
--export([init/1, handle_call/3, handle_cast/2]).
+         succeeded/1, recovered/1, recovered/2, info/1, duration/3, sweep/0]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(TAB, ?MODULE).
 -define(MIN, 60000).
 -define(HOUR, 3600000).
 -define(DAY, 86400000).
+-define(SWEEP_MS, 5 * 60000).
 
 -type target_key() :: {binary(), binary()}.  %% {CredentialId, UpstreamModel}
 %% mark/2 接受完整的上游错误，也接受余额轮询等本地合成的最小错误
@@ -55,10 +56,13 @@ duration(Kind, Err, Streak) ->
              _ -> undefined
          end,
     Grow = fun(B, Cap) -> min(Cap, B bsl min(Streak - 1, 20)) end,
+    OutRateEnabled = lg_config:get(out_rate_enabled),
     Ms = case Kind of
              credit -> 30 * ?MIN;
              quota -> quota_ms(Err, RA);
              rate_limit when RA =/= undefined -> RA;
+             %% T09：out_rate 启用时无 RA 的 rate_limit 不再翻倍（固定 Base），速率整形交给 AIMD
+             rate_limit when OutRateEnabled -> Base;
              rate_limit -> Grow(Base, 30 * ?MIN);
              auth -> Grow(Base * 6, 10 * ?MIN);
              _ when RA =/= undefined -> RA;
@@ -165,3 +169,19 @@ handle_call(_Req, _From, S) ->
 
 handle_cast(_Msg, S) ->
     {noreply, S}.
+
+handle_info(sweep, S) ->
+    sweep(),
+    _ = erlang:send_after(?SWEEP_MS, self(), sweep),
+    {noreply, S};
+handle_info(_Msg, S) ->
+    {noreply, S}.
+
+%% 清除「连续再犯窗口已过」的条目：Now > Until + 2*Duration 时再次同类失败 streak 从 1 重计（与惰性覆盖语义一致）
+sweep() ->
+    Now = lg_time:now_ms(),
+    ets:select_delete(?TAB,
+        [{{'_', '$1', '_', '_', '$2', '_'},
+          [{'>', Now, {'+', '$1', {'*', 2, '$2'}}}],
+          [true]}]),
+    ok.

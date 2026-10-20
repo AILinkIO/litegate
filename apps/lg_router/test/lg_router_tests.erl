@@ -31,6 +31,8 @@ router_test_() ->
       ?_test(concurrency_race_release()),
       ?_test(cooldown_race()),
       ?_test(affinity_choose()),
+      ?_test(cooldown_sweep()),
+      ?_test(affinity_token_sweep()),
       ?_test(strategies()),
       ?_test(timezone_note()),
       ?_test(skip_rules()),
@@ -838,3 +840,40 @@ route_capabilities() ->
     ?assertMatch({ok, #{route := <<"p/*">>, targets := [#{upstream_model := <<"big">>, reasoning := true}]}},
                  lg_route_caps:get(<<"p/big">>)),
     ?assertEqual(not_found, lg_route_caps:get(<<"nope">>)).
+
+%% T02：cooldown 周期清扫 — 删除连续再犯窗口已过（Now > Until + 2*Duration）的条目
+cooldown_sweep() ->
+    application:set_env(lg_core, route_cooldown_ms, 1000),
+    C = cred(<<"sw">>),
+    Err = #{kind => server, retry_after_ms => undefined, message => <<"m">>},
+    ok = lg_cooldown:clear(),
+    %% 标记一次冷却：Duration=1000ms，Until=Now+1000
+    ok = lg_cooldown:mark({C, <<"a">>}, Err),
+    Now = lg_time:now_ms(),
+    %% 手动把 Until 设为已过很久（Until + 2*Duration < Now）
+    [{_, _, Kind, Streak, Dur, Reason}] = ets:lookup(lg_cooldown, {C, <<"a">>}),
+    ets:insert(lg_cooldown, {{C, <<"a">>}, Now - 10 * Dur - 1, Kind, Streak, Dur, Reason}),
+    %% 还在窗口内（Until + 2*Duration >= Now）→ 不会被清扫
+    ok = lg_cooldown:mark({C, <<"b">>}, Err),
+    %% 触发清扫
+    ok = lg_cooldown:sweep(),
+    ?assertEqual([], ets:lookup(lg_cooldown, {C, <<"a">>})),
+    ?assertMatch([_], ets:lookup(lg_cooldown, {C, <<"b">>})),
+    %% 清扫后再次失败的 streak 从 1 重计（与惰性覆盖语义一致）
+    ok = lg_cooldown:mark({C, <<"a">>}, Err),
+    ?assertMatch(#{streak := 1}, lg_cooldown:info({C, <<"a">>})),
+    ok = lg_cooldown:clear(),
+    application:unset_env(lg_core, route_cooldown_ms).
+
+%% T02：affinity tokens 清扫 — 删除 30 天前的 token 条目
+affinity_token_sweep() ->
+    Now = lg_time:now_ms(),
+    %% 近期 token → 不会被清扫
+    ok = lg_affinity:add_tokens(<<"cred-new">>, 100),
+    %% 30 天前的 token → 会被清扫
+    ets:insert(lg_affinity, {{tokens, <<"cred-old">>}, 100.0, Now - 31 * 86400000}),
+    ?assertEqual(2, length(length([1 || {{tokens, _}, _, _} <- ets:tab2list(lg_affinity)]))),
+    %% 30 天前的 token 会在下次 sweep 时被清
+    ?assertEqual([], ets:lookup(lg_affinity, {tokens, <<"cred-old">>})),
+    ?assertEqual([], ets:lookup(lg_affinity, {tokens, <<"cred-old">>})),
+    ?assertMatch([_], ets:lookup(lg_affinity, {tokens, <<"cred-new">>})).

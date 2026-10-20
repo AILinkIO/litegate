@@ -16,6 +16,8 @@ users_test_() ->
       ?_test(validation()),
       ?_test(sessions_revoked()),
       ?_test(login_rate_limit()),
+      ?_test(login_guard_sweep()),
+      ?_test(session_sweep()),
       ?_test(ensure_admin())]}.
 
 create_and_login() ->
@@ -95,3 +97,34 @@ ensure_admin() ->
     %% 已有用户时不再创建
     ok = lg_users:ensure_admin(),
     ?assertEqual(1, length(lg_users:list())).
+
+%% T02：login_guard 周期清扫 — 删除窗口已过且不在冷却期的条目
+login_guard_sweep() ->
+    Now = lg_time:now_ms(),
+    %% 过期（窗口已过且不在冷却期）→ 会被清扫
+    ok = lg_login_guard:reset(),
+    ets:insert(lg_login_guard, {{<<"expired">>, <<"1.1.1.1">>}, 2, Now - 61000, 0}),
+    %% 冷却中（窗口已过但在冷却期内）→ 不会被清扫
+    ets:insert(lg_login_guard, {{<<"cooling">>, <<"2.2.2.2">>}, 3, Now - 61000, Now + 60000}),
+    %% 窗口内 → 不会被清扫
+    ets:insert(lg_login_guard, {{<<"active">>, <<"3.3.3.3">>}, 1, Now, 0}),
+    ok = lg_login_guard:sweep(),
+    ?assertEqual([], ets:lookup(lg_login_guard, {<<"expired">>, <<"1.1.1.1">>})),
+    ?assertMatch([_], ets:lookup(lg_login_guard, {<<"cooling">>, <<"2.2.2.2">>})),
+    ?assertMatch([_], ets:lookup(lg_login_guard, {<<"active">>, <<"3.3.3.3">>})).
+
+%% T02：mnesia 过期会话清扫
+session_sweep() ->
+    {ok, U} = lg_users:create(#{<<"username">> => <<"sweepee">>, <<"password">> => <<"password1">>}),
+    {ok, _T1, _} = lg_users:login(<<"sweepee">>, <<"password1">>),
+    %% 手动把会话设为过期
+    ok = lg_config:set(session_ttl_ms, -1),
+    {ok, _T2, _} = lg_users:login(<<"sweepee">>, <<"password1">>),
+    ok = lg_users:sweep_expired_sessions(),
+    %% T1 是有效的（手动设置 TTL 在 login 之后），所以不会被清
+    %% T2 是过期的，会被清
+    AllSessions = lg_db:all(lg_session),
+    [begin
+         ?assert(Exp > lg_time:now_ms())
+     end || #lg_session{expires_at = Exp} <- AllSessions],
+    ?assert(U =/= undefined).
