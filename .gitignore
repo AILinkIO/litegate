@@ -23,3 +23,6 @@ apps/lg_web/priv/static/
 
 # 浏览器自动化产物
 .playwright-mcp/
+
+# docker compose 环境密钥
+deploy/litegate.env

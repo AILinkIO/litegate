@@ -1,0 +1,32 @@
+# LiteGate Docker 部署（docker compose v2）
+#
+# 启动/更新：   docker compose up -d
+# 查看日志：    docker compose logs -f
+# 重建镜像：    docker compose build --build-arg GIT_SHA=$(git rev-parse --short HEAD) && docker compose up -d
+#
+# 关键说明：
+# - 容器以宿主机数据目录属主运行（默认 uid/gid 1000，即 david）；镜像默认的 litegate(999)
+#   无法读写 /home/david/app（/home/david 为 700），会卡在 .erlang.cookie 权限上反复重启。
+# - 绑定 0.0.0.0 必须开启控制台认证，否则应用拒绝启动（insecure_bind）。
+# - 敏感配置（管理员密码、加密主密钥）放 deploy/litegate.env（已 gitignore），勿提交。
+
+services:
+  litegate:
+    image: litegate:${LITEGATE_IMAGE_TAG:-1.1.0}
+    container_name: litegate
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-dev}
+    user: "${LITEGATE_UID:-1000}:${LITEGATE_GID:-1000}"
+    restart: unless-stopped
+    ports:
+      - "${LITEGATE_HTTP_PORT:-4000}:4000"
+    volumes:
+      - /home/david/app:/data
+    env_file:
+      - path: deploy/litegate.env
+        required: false
+    environment:
+      HOME: /data # user 覆盖后镜像 passwd 中无 home，.erlang.cookie 依赖此变量定位
+      LITEGATE_HTTP_BIND: 0.0.0.0

@@ -3,9 +3,19 @@
 LiteGate 是基于 Erlang/OTP 的 LLM API 统一网关，兼容 OpenAI 与 Anthropic 接口格式。
 它提供多凭证路由、失败回退、额度控制、规则路由、会话粘性、用量计费和管理控制台。
 
+**仪表盘**：请求与 Token 趋势、上游额度与预算、429 节流状态
+
 ![仪表盘](docs/screenshots/dashboard.png)
 
-![规则路由](docs/screenshots/route-rules.png)
+**上游健康**：凭证冷却、节流与出站速率（RPM）
+
+![上游健康](docs/screenshots/health.png)
+
+**路由表**：目标优先级、回退链路与规则数量
+
+![路由表](docs/screenshots/routes.png)
+
+**接入配置**：Claude Code、Codex、opencode 的客户端配置
 
 ![接入配置](docs/screenshots/integrations.png)
 
@@ -20,6 +30,7 @@ LiteGate 是基于 Erlang/OTP 的 LLM API 统一网关，兼容 OpenAI 与 Anthr
 | [可观测性](docs/observability.md) | 日志、用量、指标、链路、告警和健康 |
 | [部署](docs/deploy.md) | systemd 构建、安装、运维、备份和升级 |
 | [开发](docs/development.md) | 本地构建、测试、检查和项目结构 |
+| [更新日志](CHANGELOG.md) | 版本变更与破坏性变更 |
 
 ## 依赖
 
@@ -58,10 +69,22 @@ Anthropic 客户端把基础地址指向 `http://localhost:4000`，并用 `x-api
 
 ## Docker
 
+镜像构建分三阶段（控制台前端 → Erlang release → 精简运行时），状态保存在容器内 `/data`，
+运行参数用 `LITEGATE_*` 环境变量传入。
+
 ```sh
 docker build -t litegate .
 docker run -d --name litegate -p 4000:4000 -v litegate-data:/data litegate
 ```
 
-容器状态保存在 `/data`。运行参数使用 `LITEGATE_*` 环境变量传入。把端口暴露到非本机环境前，
-应先创建管理员并开启控制台登录。
+用 compose 部署（推荐，配置从 `deploy/litegate.env` 读取，模板见 `deploy/litegate.env.example`）：
+
+```sh
+docker compose build --build-arg GIT_SHA=$(git rev-parse --short HEAD)
+docker compose up -d
+docker compose logs -f
+```
+
+容器内监听 `0.0.0.0`，因此必须开启控制台登录：`LITEGATE_CONSOLE_AUTH=true`，
+首次启动用 `LITEGATE_ADMIN_PASSWORD` 创建 admin。非回环绑定且未开启登录时网关拒绝启动，
+除非显式设置 `LITEGATE_ALLOW_INSECURE_BIND=true` 接受风险（仅限受信任的隔离网络）。
