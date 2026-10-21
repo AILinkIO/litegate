@@ -1,6 +1,6 @@
 {application, lg_web, [
     {description, "LiteGate HTTP server (cowboy): proxy API, admin API, console"},
-    {vsn, "0.1.0"},
+    {vsn, "1.1.0"},
     {registered, []},
     {mod, {lg_web_app, []}},
     {applications, [kernel, stdlib, ranch, cowboy, lg_core, lg_catalog, lg_provider, lg_router, lg_store]},

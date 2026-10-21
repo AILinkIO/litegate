@@ -1,6 +1,6 @@
 {application, lg_core, [
     {description, "LiteGate core: config layers, mnesia schema, crypto"},
-    {vsn, "0.1.0"},
+    {vsn, "1.1.0"},
     {registered, []},
     {mod, {lg_core_app, []}},
     {applications, [kernel, stdlib, crypto]},
