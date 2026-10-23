@@ -24,7 +24,9 @@ start() ->
                   end),
     receive ready -> ok end,
     ets:insert(?TAB, [{responses, []}, {requests, []}, {owner, Owner}]),
-    Dispatch = cowboy_router:compile([{'_', [{"/[...]", ?MODULE, []}]}]),
+    Dispatch = cowboy_router:compile([{'_', [{"/v1/live", ?MODULE, []},
+                                              {"/v1/live/[...]", lg_mock_ws_upstream, []},
+                                              {"/[...]", ?MODULE, []}]}]),
     {ok, _} = cowboy:start_clear(?MODULE, [{port, 0}],
                                  #{env => #{dispatch => Dispatch}, idle_timeout => 2000}),
     ranch:get_port(?MODULE).

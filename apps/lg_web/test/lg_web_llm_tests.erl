@@ -12,6 +12,7 @@ web_test_() ->
              [?_test(health(Ctx)),
               ?_test(auth_errors(Ctx)),
               ?_test(models(Ctx)),
+              {timeout, 20, ?_test(realtime(Ctx))},
               ?_test(unknown_and_forbidden(Ctx)),
               ?_test(openai_sync_with_fallback(Ctx)),
               ?_test(client_error_not_retried(Ctx)),
@@ -141,6 +142,12 @@ completion(Text) ->
 upstream_models() ->
     [maps:get(<<"model">>, B) || #{body := B} <- lg_mock_upstream:requests()].
 
+model_of(Body) when is_map(Body) -> maps:get(<<"model">>, Body, null);
+model_of(Body) ->
+    {match, [Model]} = re:run(Body, <<"\"model\":\"([^\"]+)\"">>,
+                              [{capture, all_but_first, binary}]),
+    Model.
+
 reset_upstream() ->
     lg_cooldown:clear(),
     ets:insert(lg_mock_upstream, {requests, []}).
@@ -168,6 +175,51 @@ models(#{key := K} = Ctx) ->
     ?assertMatch(#{<<"data">> := [#{<<"type">> := <<"model">>, <<"id">> := <<"claude">>} | _],
                    <<"first_id">> := <<"claude">>, <<"last_id">> := <<"native">>, <<"has_more">> := false},
                  json:decode(B2)).
+
+realtime(#{key := K} = Ctx) ->
+    Old = application:get_env(lg_core, upstream_connect_timeout_ms, 10000),
+    application:set_env(lg_core, upstream_connect_timeout_ms, 500),
+    try realtime_run(#{key := K} = Ctx)
+    after application:set_env(lg_core, upstream_connect_timeout_ms, Old)
+    end.
+
+realtime_run(#{key := K} = Ctx) ->
+    reset_upstream(),
+    lg_mock_upstream:expect({json, 201,
+                             #{<<"location">> => <<"/v1/live/rtc_upstream">>,
+                               <<"content-type">> => <<"application/sdp">>},
+                             <<"v=answer\r\n">>}),
+    Body = <<"--codex-realtime-call-boundary\r\n"
+             "Content-Disposition: form-data; name=\"sdp\"\r\n"
+             "Content-Type: application/sdp\r\n\r\n"
+             "v=offer\r\n"
+             "--codex-realtime-call-boundary\r\n"
+             "Content-Disposition: form-data; name=\"session\"\r\n"
+             "Content-Type: application/json\r\n\r\n"
+             "{\"model\":\"native\",\"type\":\"realtime\"}\r\n"
+             "--codex-realtime-call-boundary--\r\n">>,
+    {201, H, <<"v=answer\r\n">>} =
+        req(Ctx, <<"POST">>, <<"/v1/live">>,
+            [{<<"authorization">>, <<"Bearer ", K/binary>>},
+             {<<"content-type">>,
+              <<"multipart/form-data; boundary=codex-realtime-call-boundary">>}], Body),
+    ?assertEqual(<<"/v1/live/rtc_upstream">>, proplists:get_value(<<"location">>, H)),
+    [Up] = lg_mock_upstream:requests(),
+    ?assertEqual(<<"/v1/live">>, maps:get(path, Up)),
+    ?assertEqual(<<"rs-up">>, model_of(maps:get(body, Up))),
+
+    {ok, Conn} = gun:open("127.0.0.1", maps:get(port, Ctx), #{retry => 0}),
+    {ok, _} = gun:await_up(Conn, 5000),
+    ClientRef = gun:ws_upgrade(Conn, <<"/v1/live/rtc_upstream">>,
+                               [{<<"authorization">>, <<"Bearer ", K/binary>>}]),
+    receive {gun_upgrade, Conn, _, _, _} -> ok after 5000 -> error(ws_upgrade_timeout) end,
+    gun:ws_send(Conn, ClientRef, {text, <<"hello realtime">>}),
+    receive
+        {gun_ws, Conn, _, {text, <<"hello realtime">>}} -> ok;
+        {gun_ws, Conn, _, Other} -> error({unexpected_ws_frame, Other})
+    after 5000 -> error(ws_echo_timeout)
+    end,
+    gun:close(Conn).
 
 unknown_and_forbidden(#{key := K} = Ctx) ->
     {404, _, B} = post(Ctx, <<"/v1/chat/completions">>, K, chat(<<"nope">>)),

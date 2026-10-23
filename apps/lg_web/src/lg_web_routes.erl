@@ -17,6 +17,9 @@ routes() ->
      %% 结构化决策（TypeSafe System One，如百炼 decision-model-preview；SDK 的 base_url 指向网关即可）
      {"/v1/systemone", lg_web_llm, #{format => openai, kind => systemone}},
      {"/v1/responses", lg_web_llm, #{format => responses}},
+     %% OpenAI Realtime WebRTC：POST 创建 call，GET /v1/live/{call_id} 为 sideband WebSocket
+     {"/v1/live", lg_web_realtime, #{}},
+     {"/v1/live/[...]", lg_web_realtime, #{}},
      {"/v1/models", lg_web_models, #{}},
      %% 控制台 Playground：控制台身份调用，走完整路由链路
      {"/api/playground/chat", lg_web_llm, #{format => openai, source => playground}},

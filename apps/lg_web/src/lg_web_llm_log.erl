@@ -74,7 +74,8 @@ record(#{id := Id, kind := Kind} = Ctx, F, Stream, Body, Out, Status) ->
                    {chat, responses} -> #{request => responses_request(Body),
                                           response => maps:get(text, Result, <<>>)};
                    {chat, _} -> #{request => maps:with([<<"system">>, <<"messages">>], Body),
-                                  response => maps:get(text, Result, <<>>)}
+                                  response => maps:get(text, Result, <<>>)};
+                   {live, _} -> undefined
                end,
     ok = lg_store:record(Log, Messages),
     LiveEnd = maps:filter(fun(_, V) -> V =/= undefined end,

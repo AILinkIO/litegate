@@ -17,6 +17,7 @@ init([]) ->
                 #{id => lg_out_rate, start => {lg_out_rate, start_link, []}},
                 #{id => lg_live_pg, start => {pg, start_link, [lg_live_pg]}},
                 #{id => lg_live, start => {lg_live, start_link, []}},
+                #{id => lg_realtime, start => {lg_realtime, start_link, []}},
                 #{id => lg_middleware, start => {lg_middleware, start_link, []}},
                 #{id => lg_otlp, start => {lg_otlp, start_link, []}},
                 #{id => lg_otlp_metrics, start => {lg_otlp_metrics, start_link, []}},

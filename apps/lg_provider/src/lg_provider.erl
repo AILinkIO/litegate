@@ -13,7 +13,7 @@
 -include_lib("lg_core/include/lg_core.hrl").
 
 -export([chat/3, stream_open/3, stream_next/1, stream_abort/1, stream_set_idle/2, error_frame/2, upstream_request/3,
-         embeddings/2, count_tokens/2, stream_output_started/1, probe/2, auth_headers/4,
+         embeddings/2, count_tokens/2, live/2, stream_output_started/1, probe/2, auth_headers/4,
          streamable/1]).
 
 %% 供 lg_provider_stream 组合调用；不属于公共 provider API
@@ -263,6 +263,40 @@ count_tokens(Req, #{credential := #lg_credential{protocol = anthropic, base_url 
 count_tokens(_Req, _Target) ->
     {error, lg_llm_error:classify({unsupported, <<"count_tokens">>})}.
 
+%% @doc OpenAI Realtime WebRTC call：POST {base}/live，multipart 原样透传，
+%% 只替换 session 部分的 model。返回值保留上游状态、响应头与响应体。
+-spec live(map(), target()) ->
+          {ok, map(), result()} | {error, lg_llm_error:error()}.
+live(#{<<"body">> := Body, <<"content_type">> := CT},
+     #{credential := #lg_credential{protocol = openai} = Cred, upstream_model := Model} = Target) ->
+    Url = live_url(Cred),
+    case auth_headers(openai, Cred, openai, Target) of
+        {ok, AuthH} ->
+            Headers = [{<<"content-type">>, CT}, {<<"accept">>, <<"application/sdp">>}]
+                       ++ lists:keydelete(<<"content-type">>, 1,
+                                          lists:keydelete(<<"accept">>, 1, AuthH))
+                       ++ Cred#lg_credential.headers,
+            UpBody = rewrite_live_model(Body, Model),
+            Timeout = lg_config:get(upstream_timeout_ms),
+            case lg_http:request(<<"POST">>, Url, Headers, UpBody, Timeout, #{}) of
+                {ok, Status, RespHeaders, RespBody} ->
+                    case call_id(RespHeaders) of
+                        {ok, CallId} ->
+                            {ok, #{status => Status, headers => RespHeaders, body => RespBody,
+                                   call_id => CallId, live_base => realtime_base(Cred)},
+                             (lg_usage:zero())#{usage => lg_usage:zero(), model => Model, id => CallId}};
+                        error ->
+                            {error, lg_llm_error:classify({bad_response, missing_realtime_location})}
+                    end;
+                {error, Reason} ->
+                    {error, lg_llm_error:classify(Reason)}
+            end;
+        {error, Reason} ->
+            {error, lg_llm_error:classify(Reason)}
+    end;
+live(_Req, _Target) ->
+    {error, lg_llm_error:classify({unsupported, <<"live">>})}.
+
 %% @doc 探活：GET 模型列表（openai：{base}/models；anthropic：.../v1/models），只关心能否鉴权成功。
 -spec probe(#lg_credential{}, timeout()) -> ok | {error, lg_llm_error:error()}.
 probe(#lg_credential{protocol = Proto, base_url = Base} = Cred, Timeout) ->
@@ -303,6 +337,43 @@ passthrough(Url, Proto, Req, #{credential := Cred, upstream_model := Model} = Ta
         {error, Reason} ->
             {error, lg_llm_error:classify(Reason)}
     end.
+
+live_url(#lg_credential{base_url = Base, options = O}) ->
+    <<(trim_slash(maps:get(live_base_url, O, Base)))/binary, "/live">>.
+
+realtime_base(#lg_credential{base_url = Base, options = O}) ->
+    trim_slash(maps:get(live_base_url, O, Base)).
+
+%% multipart 只包含 sdp 与 session；Codex 当前固定 boundary。
+%% 这里不重建请求，避免破坏 SDP 换行与二进制扩展，仅替换 session JSON 里的 model。
+rewrite_live_model(Body, Model) ->
+    Pattern = <<"\"model\"[ \\t]*:[ \\t]*\"[^\"]+\"">>,
+    Replacement = <<"\"model\":\"", Model/binary, "\"">>,
+    case re:replace(Body, Pattern, Replacement, [{return, binary}]) of
+        Body -> Body;
+        Replaced -> Replaced
+    end.
+
+call_id(Headers) ->
+    case lists:keyfind(<<"location">>, 1, Headers) of
+        {_, Location} ->
+            Path = hd(binary:split(Location, <<"?">>)),
+            case [Seg || Seg <- binary:split(Path, <<"/">>, [global]), Seg =/= <<>>, call_id_seg(Seg)] of
+                [CallId | _] -> {ok, CallId};
+                [] -> error
+            end;
+        false ->
+            error
+    end.
+
+call_id_seg(<<"rtc_", _/binary>> = Seg) when byte_size(Seg) > 4 -> true;
+call_id_seg(Seg) when byte_size(Seg) =:= 36 ->
+    <<A:8/binary, $-, B:4/binary, $-, C:4/binary, $-, D:4/binary, $-, E:12/binary>> = Seg,
+    lists:all(fun is_hex/1, binary_to_list(<<A/binary, B/binary, C/binary, D/binary, E/binary>>));
+call_id_seg(_) -> false.
+
+is_hex(C) when C >= $0, C =< $9; C >= $a, C =< $f; C >= $A, C =< $F -> true;
+is_hex(_) -> false.
 
 
 %%====================================================================

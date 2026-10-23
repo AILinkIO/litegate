@@ -15,11 +15,11 @@
 
 -define(MAX_NESTING, 3).
 
--export([classify/4, judge_systemone/4, systemone_request/1, candidates/1, models/1, resolve/2, plan/1, plan/2, plan/3, chat/3, stream_open/3, embeddings/2, count_tokens/2, images/2, speech/2, systemone/2,
+-export([classify/4, judge_systemone/4, systemone_request/1, candidates/1, models/1, resolve/2, plan/1, plan/2, plan/3, chat/3, stream_open/3, embeddings/2, count_tokens/2, images/2, speech/2, live/2, systemone/2,
          finalize/2, done/1, default_max_tokens/1]).
 
 -type ctx() :: #{key := #lg_api_key{}, client_headers => [{binary(), binary()}],
-                 id => binary(), kind => chat | embeddings | count_tokens | images | speech | systemone,
+                 id => binary(), kind => chat | embeddings | count_tokens | images | speech | live | systemone,
                  no_cache => boolean(),
                  client => binary(), user_agent => binary() | undefined,
                  traceparent => binary() | undefined,
@@ -117,6 +117,13 @@ systemone(Req, Ctx) ->
     run(openai, Req, Ctx, fun(_C, R, T) -> lg_media:systemone(R, T) end,
         #{protocols => [openai], clamp => false, op => <<"systemone">>}).
 
+%% @doc OpenAI Realtime WebRTC call：只使用开启原生 Responses API 的 OpenAI 目标；
+%% 原始 multipart 请求透传，只替换 session.model。
+-spec live(map(), ctx()) -> {ok, map(), outcome()} | {error, error_reason(), outcome()}.
+live(Req, Ctx) ->
+    run(openai, Req, Ctx, fun(_C, R, T) -> lg_provider:live(R, T) end,
+        #{protocols => [openai], native_api => true, clamp => false, op => <<"live">>}).
+
 %% @doc Anthropic count_tokens：只使用 anthropic 协议的目标；不占限额、不计费。
 %% 路由没有 Anthropic 协议目标，或上游不支持该接口（404 / 405 / 501）时本地估算（outcome 带 estimated）。
 -spec count_tokens(map(), ctx()) -> {ok, iodata(), outcome()} | {error, error_reason(), outcome()}.
@@ -142,6 +149,14 @@ estimated(Req, Out) ->
 estimable({unsupported_operation, _}) -> true;
 estimable(#{status := S}) when S =:= 404; S =:= 405; S =:= 501 -> true;
 estimable(_) -> false.
+
+%% 原生 API（当前为 Realtime /v1/live）：要求凭证显式开启 responses_api，
+%% 避免把实时请求发给仅兼容 Chat Completions 的上游。
+native_targets(Plan, false) ->
+    Plan;
+native_targets(Plan, true) ->
+    [P || {_, _, #lg_credential{options = O}} = P <- Plan,
+          maps:get(responses_api, O, false) =:= true].
 
 %% @doc 开流：上游返回 2xx 响应头之前的失败都会回退。
 -spec stream_open(lg_provider:format(), map(), ctx()) ->
@@ -216,7 +231,8 @@ run(Client, Req, #{key := Key} = Ctx, Call, Opts) ->
                                                     {Plan0, Out1d};
                                                 _ -> sticky(Plan0, Route, Ctx, Out1d)
                                             end,
-                            Plan = prefer(Plan1, maps:get(prefer, Ctx, undefined)),
+                            Plan0x = native_targets(Plan1, maps:get(native_api, Opts, false)),
+                            Plan = prefer(Plan0x, maps:get(prefer, Ctx, undefined)),
                             Out3 = Out2#{plan_trace => trace(Plan)},
                             lg_live:decision(maps:get(id, Ctx, undefined),
                                              maps:filter(fun(_, V) -> V =/= undefined end,

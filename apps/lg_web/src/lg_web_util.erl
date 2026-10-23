@@ -3,7 +3,7 @@
 
 -include_lib("lg_core/include/lg_core.hrl").
 
--export([json/3, raw_json/3, read_json/1, authenticate/1, error_reply/5]).
+-export([json/3, raw_json/3, read_json/1, read_raw/1, authenticate/1, error_reply/5]).
 
 -spec json(pos_integer(), term(), cowboy_req:req()) -> cowboy_req:req().
 json(Status, Term, Req) ->
@@ -29,6 +29,12 @@ read_json(Req0) ->
         {error, _, _} = Err ->
             Err
     end.
+
+-spec read_raw(cowboy_req:req()) ->
+          {ok, binary(), cowboy_req:req()} | {error, too_large, cowboy_req:req()}.
+read_raw(Req0) ->
+    Max = lg_config:get(max_body_bytes),
+    read_body(Req0, [], 0, Max).
 
 read_body(Req0, Acc, Size, Max) ->
     case cowboy_req:read_body(Req0, #{length => 1024 * 1024, period => 15000}) of

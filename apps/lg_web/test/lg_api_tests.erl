@@ -285,9 +285,10 @@ openapi(Ctx) ->
                  end || Src <- Sources]),
     Api = [{M, <<"/api", (segments(Segs))/binary>>} || [M, Segs] <- Clauses],
     Web = [{<<"POST">>, P} || {P0, lg_web_llm, _} <- lg_web_routes:routes(), P <- [list_to_binary(P0)]]
-        ++ [{<<"GET">>, <<"/v1/models">>}, {<<"GET">>, <<"/health">>}, {<<"GET">>, <<"/metrics">>}],
+        ++ [{<<"POST">>, <<"/v1/live">>}, {<<"GET">>, <<"/v1/live/{}">>},
+            {<<"GET">>, <<"/v1/models">>}, {<<"GET">>, <<"/health">>}, {<<"GET">>, <<"/metrics">>}],
     ?assert(length(Api) > 50),
-    ?assertEqual(17, length(Web)),
+    ?assertEqual(19, length(Web)),
     Implemented = lists:usort(Api ++ Web),
     ?assertEqual([], Implemented -- Documented),
     ?assertEqual([], Documented -- Implemented).

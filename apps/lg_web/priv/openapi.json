@@ -105,7 +105,7 @@
      }
     },
     "responses": {
-     "200": {
+     "201": {
       "description": "成功",
       "content": {
        "application/json": {
@@ -508,6 +508,65 @@
         }
        }
       }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/v1/live": {
+   "post": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "OpenAI Realtime WebRTC call",
+    "description": "透传 multipart 的 SDP 与 session，只把 session.model 替换为路由目标模型；仅使用开启 responses_api 的 OpenAI 凭证。响应 Location 被改写为 /v1/live/{call_id}。",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "multipart/form-data": {
+       "schema": {
+        "type": "object"
+       },
+       "example": "multipart form-data: sdp + session"
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "创建成功；body 为 SDP answer，Location 指向 sideband WebSocket"
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/v1/live/{callId}": {
+   "get": {
+    "tags": [
+     "网关"
+    ],
+    "summary": "OpenAI Realtime sideband WebSocket",
+    "description": "通过 WebRTC call 创建响应返回的 call id 加入对应上游；双向转发 Realtime WebSocket 帧。",
+    "parameters": [
+     {
+      "name": "callId",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "101": {
+      "description": "WebSocket 升级成功"
      }
     },
     "security": [
