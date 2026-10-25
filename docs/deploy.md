@@ -6,7 +6,7 @@
 
 ```sh
 scripts/release.sh
-# 产物：_build/prod/rel/litegate/litegate-1.1.0.tar.gz（含 ERTS，目标机无需安装 Erlang）
+# 产物：_build/prod/rel/litegate/litegate-1.1.1.tar.gz（含 ERTS，目标机无需安装 Erlang）
 ```
 
 目标机需与构建机的 CPU 架构、glibc、libicu 大版本一致（release 内含 bitcask NIF 与 ERTS 的本机代码），
@@ -17,7 +17,7 @@ scripts/release.sh
 ```sh
 sudo useradd --system --home-dir /var/lib/litegate --shell /usr/sbin/nologin litegate
 sudo mkdir -p /opt/litegate /etc/litegate
-sudo tar -xzf litegate-1.1.0.tar.gz -C /opt/litegate
+sudo tar -xzf litegate-1.1.1.tar.gz -C /opt/litegate
 
 sudo cp deploy/litegate.env.example /etc/litegate/litegate.env
 sudo chmod 600 /etc/litegate/litegate.env

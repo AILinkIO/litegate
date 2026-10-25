@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "LiteGate API",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "LiteGate LLM 网关：/v1/* 为网关接口（网关 API Key），/api/* 为控制台管理接口（控制台会话；未开启登录时无需鉴权）。"
  },
  "tags": [
