@@ -29,7 +29,7 @@ export function NavUser() {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <SidebarMenuButton size='lg' className='data-[state=open]:bg-sidebar-accent'>
-                <div className='flex size-8 items-center justify-center rounded-lg bg-secondary text-subtle-foreground'>
+                <div className='flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-subtle-foreground'>
                   <UserRound className='size-4' />
                 </div>
                 <div className='grid flex-1 text-start leading-tight'>
