@@ -20,8 +20,9 @@ import type { VersionInfo } from '@/lib/api'
 import { NavUser } from './nav-user'
 
 function VersionBadge() {
+  const { state } = useSidebar()
   const { data } = useGet<VersionInfo>('/version')
-  if (!data) return null
+  if (!data || state === 'collapsed') return null
   const commit = data.commit.length > 7 ? data.commit.slice(0, 7) : data.commit
   return (
     <div className="px-2 pb-1 text-center text-[11px] text-muted-foreground/70">

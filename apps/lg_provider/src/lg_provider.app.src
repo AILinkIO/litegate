@@ -1,6 +1,6 @@
 {application, lg_provider, [
     {description, "LiteGate upstream providers: HTTP/SSE, protocol adapters"},
-    {vsn, "1.1.0"},
+    {vsn, "1.1.1"},
     {registered, []},
     {mod, {lg_provider_app, []}},
     {applications, [kernel, stdlib, ssl, public_key, gun, lg_core]},

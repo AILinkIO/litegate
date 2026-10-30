@@ -3,9 +3,10 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 版本号以 `rebar.config` 的 release 为准，控制台侧栏与 `GET /api/version` 显示同一版本与 git commit。
 
-## 未发布
+## 1.1.1 — 2026-10-30
 
-第二轮审查的 P0 回归修复、P1 稳定度加固与 P2 性能优化（[D05](designs/D05-regressions-stability-perf.md)，T16–T33）。
+第二轮审查的 P0 回归修复、P1 稳定度加固与 P2 性能优化（[D05](designs/D05-regressions-stability-perf.md)，T16–T33），
+以及控制台侧栏收起态修复。
 
 ### 修复
 
@@ -90,6 +91,8 @@
   cowboy 因重复回复让连接进程崩溃，keep-alive 连接上的后续请求随之失败；现在只有未命中时才继续匹配。
 - 模型目录：运行时修改 `catalog_sync_interval_ms` 下一轮即生效（包括从 0 开启）；从网络同步时若要删除 30% 以上现有
   模型则中止并记为同步失败（触发 `catalog_sync_failed` 告警），手动导入不受此限。
+- **侧栏底部用户入口**：收起侧栏后头像图标被 flex 压缩变形，补 `shrink-0` 保持完整圆角方块。
+- **侧栏版本号溢出**：版本号（`v<版本> · <commit>`）在收起态下换行并溢出侧栏边界，收起时不再渲染。
 
 ## 1.1.0 — 2026-10-21
 

@@ -1,6 +1,6 @@
 {application, lg_router, [
     {description, "LiteGate routing: route table, API key auth, load balancing"},
-    {vsn, "1.1.0"},
+    {vsn, "1.1.1"},
     {registered, []},
     {mod, {lg_router_app, []}},
     {applications, [kernel, stdlib, lg_core, lg_catalog, lg_provider, lg_store]},
