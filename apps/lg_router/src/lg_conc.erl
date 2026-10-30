@@ -4,6 +4,10 @@
 %% - 占用者进程被监视：进程退出（客户端断开、崩溃）自动释放它持有的全部名额
 %% - 排队：名额满时调用方进入该凭证的 FIFO 队列；队列长度超过 queue_limit 立即返回 full，
 %%   等待超过 queue_wait_ms 返回 timeout；释放名额时按顺序交给队首
+%% - 排队者同样被监视：断开的客户端立即移出队列，不会占着 queue_limit
+%% - 本进程忙（call 超时）或不在时调用方不崩溃：acquire 视为 busy，wait 视为 full；
+%%   本进程重启后状态清空（ETS 随之重建），正在排队的调用方立即返回 timeout，
+%%   已持有名额的请求不再计数（重启会短暂放宽并发上限）
 -module(lg_conc).
 -behaviour(gen_server).
 
@@ -26,41 +30,77 @@ max_of(_) -> 0.
 %% @doc 立即占一个名额：ok | busy。
 -spec acquire(binary(), pos_integer()) -> ok | busy.
 acquire(CredId, Max) ->
-    gen_server:call(?MODULE, {acquire, CredId, Max, self()}).
+    try gen_server:call(?MODULE, {acquire, CredId, Max, self()})
+    catch exit:_ -> busy
+    end.
 
 %% @doc 排队等待名额：ok | timeout | full。
 -spec wait(binary(), pos_integer(), non_neg_integer()) -> ok | timeout | full.
 wait(CredId, Max, TimeoutMs) ->
     wait(CredId, Max, TimeoutMs, undefined).
 
-%% @doc 同 wait/3；Idle 为等待期间每秒调用一次的回调（流式请求写保活帧）。
+%% @doc 同 wait/3；Idle 为等待期间每 250ms 调用一次的回调（流式请求写保活帧）。
+%% Idle 抛出 {client_exit, _}（客户端断开，T20）时退出队列后继续抛出。
 -spec wait(binary(), pos_integer(), non_neg_integer(), fun(() -> term()) | undefined) -> ok | timeout | full.
 wait(CredId, Max, TimeoutMs, Idle) ->
     Ref = make_ref(),
-    case gen_server:call(?MODULE, {wait, CredId, Max, self(), Ref, lg_config:get(queue_limit)}) of
-        ok -> ok;
-        full -> full;
-        queued -> await_grant(CredId, Ref, lg_time:now_ms() + TimeoutMs, Idle)
+    case whereis(?MODULE) of
+        undefined ->
+            full;
+        Srv ->
+            %% 监视本进程：排队期间它重启（队列丢失）时立即返回，不必等到超时
+            SrvRef = erlang:monitor(process, Srv),
+            Res = try gen_server:call(Srv, {wait, CredId, Max, self(), Ref, lg_config:get(queue_limit)}) of
+                      ok -> ok;
+                      full -> full;
+                      queued -> await_grant(CredId, Ref, SrvRef, lg_time:now_ms() + TimeoutMs, Idle)
+                  catch exit:_ -> full
+                  end,
+            erlang:demonitor(SrvRef, [flush]),
+            Res
     end.
 
-await_grant(CredId, Ref, Deadline, Idle) ->
+await_grant(CredId, Ref, SrvRef, Deadline, Idle) ->
     Left = max(0, Deadline - lg_time:now_ms()),
-    Wait = case Idle of undefined -> Left; _ -> min(Left, 1000) end,
+    Wait = case Idle of undefined -> Left; _ -> min(Left, 250) end,
     receive
-        {lg_conc_granted, Ref} -> ok
+        {lg_conc_granted, Ref} -> ok;
+        {'DOWN', SrvRef, process, _, _} -> timeout
     after Wait ->
         case lg_time:now_ms() >= Deadline of
             false ->
-                _ = catch Idle(),
-                await_grant(CredId, Ref, Deadline, Idle);
+                idle(CredId, Ref, Idle),
+                await_grant(CredId, Ref, SrvRef, Deadline, Idle);
             true ->
-                case gen_server:call(?MODULE, {cancel, CredId, Ref}) of
+                case catch gen_server:call(?MODULE, {cancel, CredId, Ref}) of
                     cancelled -> timeout;
-                    %% 取消前刚好被分到名额
-                    granted -> receive {lg_conc_granted, Ref} -> ok end
+                    %% 取消前刚好被分到名额（授予消息先于 cancel 的回复发出）；
+                    %% 收不到说明本进程已重启、队列已丢失，按超时处理
+                    granted ->
+                        receive {lg_conc_granted, Ref} -> ok
+                        after 1000 -> release(CredId), timeout
+                        end;
+                    _ -> timeout
                 end
         end
     end.
+
+%% 客户端已断开：取消排队（取消前刚好分到的名额立即归还），再把 client_exit 抛给路由层
+idle(CredId, Ref, Idle) ->
+    try Idle()
+    catch
+        throw:{client_exit, _} = E ->
+            case catch gen_server:call(?MODULE, {cancel, CredId, Ref}) of
+                granted ->
+                    receive {lg_conc_granted, Ref} -> release(CredId)
+                    after 1000 -> release(CredId)
+                    end;
+                _ -> ok
+            end,
+            throw(E);
+        _:_ -> ok
+    end,
+    ok.
 
 %% @doc 释放调用进程在该凭证上的一个名额。
 -spec release(binary()) -> ok.
@@ -89,7 +129,8 @@ full(CredId, Max) -> inflight(CredId) >= Max.
 %% gen_server
 %%====================================================================
 
-%% State：holders => #{Pid => {MonitorRef, [CredId]}}，queues => #{CredId => queue({Pid, Ref, Max})}
+%% State：holders => #{Pid => {MonitorRef, [CredId]}}，
+%% queues => #{CredId => queue({Pid, Ref, Max, MonitorRef})}（排队者各自一个 monitor）
 init([]) ->
     ?TAB = ets:new(?TAB, [named_table, public, {read_concurrency, true}]),
     lg_metrics:register_gauge(litegate_credential_inflight, <<"Requests in flight per upstream credential">>,
@@ -109,19 +150,21 @@ handle_call({wait, C, Max, Pid, Ref, Limit}, _From, S) ->
         Len =:= 0 ->
             case inflight(C) < Max of
                 true -> {reply, ok, grant(C, Pid, S)};
-                false -> {reply, queued, enqueue(C, {Pid, Ref, Max}, S)}
+                false -> {reply, queued, enqueue(C, Pid, Ref, Max, S)}
             end;
         Len >= Limit ->
             {reply, full, S};
         true ->
-            {reply, queued, enqueue(C, {Pid, Ref, Max}, S)}
+            {reply, queued, enqueue(C, Pid, Ref, Max, S)}
     end;
 handle_call({cancel, C, Ref}, _From, #{queues := Qs} = S) ->
     Q = maps:get(C, Qs, queue:new()),
-    Q1 = queue:filter(fun({_, R, _}) -> R =/= Ref end, Q),
-    case queue:len(Q1) =:= queue:len(Q) of
-        true -> {reply, granted, S};
-        false -> {reply, cancelled, set_queue(C, Q1, S)}
+    {Mine, Q1} = lists:partition(fun({_, R, _, _}) -> R =:= Ref end, queue:to_list(Q)),
+    case Mine of
+        [] -> {reply, granted, S};
+        _ ->
+            _ = [erlang:demonitor(M, [flush]) || {_, _, _, M} <- Mine],
+            {reply, cancelled, set_queue(C, queue:from_list(Q1), S)}
     end.
 
 handle_cast({release, C, Pid}, S) ->
@@ -132,9 +175,15 @@ handle_info({'DOWN', _MRef, process, Pid, _}, #{holders := Hs, queues := Qs} = S
     Held = case maps:find(Pid, Hs) of {ok, {_, Cs}} -> Cs; error -> [] end,
     S1 = S#{holders => maps:remove(Pid, Hs)},
     S2 = lists:foldl(fun(C, Acc) -> set_count(C, inflight(C) - 1), Acc end, S1, Held),
-    S3 = maps:fold(fun(C, Q, Acc) -> set_queue(C, queue:filter(fun({P, _, _}) -> P =/= Pid end, Q), Acc) end,
-                   S2, Qs),
-    {noreply, lists:foldl(fun drain/2, S3, lists:usort(Held))};
+    %% 同一进程可能既持有名额又在排队（两个 monitor 各来一次 DOWN），按 Pid 处理保证幂等
+    {S3, Left} = maps:fold(fun(C, Q, {Acc, Cs}) ->
+                                   Q1 = queue:filter(fun({P, _, _, _}) -> P =/= Pid end, Q),
+                                   case queue:len(Q1) =:= queue:len(Q) of
+                                       true -> {Acc, Cs};
+                                       false -> {set_queue(C, Q1, Acc), [C | Cs]}
+                                   end
+                           end, {S2, []}, Qs),
+    {noreply, lists:foldl(fun drain/2, S3, lists:usort(Held ++ Left))};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
@@ -172,9 +221,10 @@ drop(C, Pid, #{holders := Hs} = S) ->
 drain(C, #{queues := Qs} = S) ->
     Q = maps:get(C, Qs, queue:new()),
     case queue:out(Q) of
-        {{value, {Pid, Ref, Max}}, Q1} ->
+        {{value, {Pid, Ref, Max, M}}, Q1} ->
             case inflight(C) < Max of
                 true ->
+                    erlang:demonitor(M, [flush]),
                     S1 = set_queue(C, Q1, S),
                     case is_process_alive(Pid) of
                         true ->
@@ -188,7 +238,8 @@ drain(C, #{queues := Qs} = S) ->
         {empty, _} -> S
     end.
 
-enqueue(C, Item, #{queues := Qs} = S) ->
+enqueue(C, Pid, Ref, Max, #{queues := Qs} = S) ->
+    Item = {Pid, Ref, Max, erlang:monitor(process, Pid)},
     set_queue(C, queue:in(Item, maps:get(C, Qs, queue:new())), S).
 
 set_queue(C, Q, #{queues := Qs} = S) ->

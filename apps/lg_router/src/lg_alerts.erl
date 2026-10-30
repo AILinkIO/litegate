@@ -3,13 +3,17 @@
 %% 渠道：name, type（webhook | feishu | dingtalk | wecom）, url（含令牌，加密存储，展示时只给主机与末 4 位）,
 %%       secret（飞书 / 钉钉签名密钥，可选，加密存储）, enabled
 %% 规则：event, threshold（缺省按事件取默认值）, channels（渠道 id 列表）, enabled
+%% 各事件的启用规则缓存在 persistent_term（告警热路径不查表）；规则写入（含删除渠道、配置导入）后
+%% 调用 refresh_rules/0 重建。
 -module(lg_alerts).
 
 -include_lib("lg_core/include/lg_core.hrl").
 
 -export([create_channel/1, update_channel/2, delete_channel/1, channel/1, channels/0, channel_to_map/1,
-         create_rule/1, update_rule/2, delete_rule/1, rules/0, rules/1, rule_to_map/1,
+         create_rule/1, update_rule/2, delete_rule/1, rules/0, rules/1, has_rules/1, refresh_rules/0, rule_to_map/1,
          default_threshold/1, events/0]).
+
+-define(RULES_KEY, {?MODULE, rules}).
 
 
 -spec events() -> [lg_alert_event()].
@@ -60,7 +64,9 @@ delete_channel(Id) ->
         {ok, _} ->
             [ok = lg_db:write(R#lg_alert_rule{channels = lists:delete(Id, Cs)})
              || #lg_alert_rule{channels = Cs} = R <- lg_db:all(lg_alert_rule), lists:member(Id, Cs)],
-            lg_db:delete(lg_channel, Id);
+            Res = lg_db:delete(lg_channel, Id),
+            refresh_rules(),
+            Res;
         not_found ->
             {error, not_found}
     end.
@@ -124,7 +130,7 @@ create_rule(P) ->
     Now = lg_time:now_ms(),
     Base = #lg_alert_rule{id = lg_id:new(<<"rule">>), event = budget, created_at = Now, updated_at = Now},
     case apply_rule(P, Base, create) of
-        {ok, R} -> ok = lg_db:write(R), {ok, R};
+        {ok, R} -> ok = lg_db:write(R), refresh_rules(), {ok, R};
         Err -> Err
     end.
 
@@ -133,7 +139,11 @@ update_rule(Id, P) ->
     case lg_db:read(lg_alert_rule, Id) of
         {ok, Old} ->
             case apply_rule(P, Old, update) of
-                {ok, R} -> R1 = R#lg_alert_rule{updated_at = lg_time:now_ms()}, ok = lg_db:write(R1), {ok, R1};
+                {ok, R} ->
+                    R1 = R#lg_alert_rule{updated_at = lg_time:now_ms()},
+                    ok = lg_db:write(R1),
+                    refresh_rules(),
+                    {ok, R1};
                 Err -> Err
             end;
         not_found ->
@@ -143,16 +153,44 @@ update_rule(Id, P) ->
 -spec delete_rule(binary()) -> ok | {error, not_found}.
 delete_rule(Id) ->
     case lg_db:read(lg_alert_rule, Id) of
-        {ok, _} -> lg_db:delete(lg_alert_rule, Id);
+        {ok, _} -> Res = lg_db:delete(lg_alert_rule, Id), refresh_rules(), Res;
         not_found -> {error, not_found}
     end.
 
 -spec rules() -> [#lg_alert_rule{}].
 rules() -> lists:keysort(#lg_alert_rule.created_at, lg_db:all(lg_alert_rule)).
 
-%% @doc 某事件的启用规则。
+%% @doc 某事件的启用规则（读缓存）。
 -spec rules(lg_alert_event()) -> [#lg_alert_rule{}].
-rules(Event) -> [R || #lg_alert_rule{event = E, enabled = true} = R <- rules(), E =:= Event].
+rules(Event) -> maps:get(Event, cached_rules(), []).
+
+%% @doc 某事件是否有启用的规则（告警上报前判断，没有时不必投递）。
+-spec has_rules(lg_alert_event()) -> boolean().
+has_rules(Event) -> maps:is_key(Event, cached_rules()).
+
+cached_rules() ->
+    case persistent_term:get(?RULES_KEY, undefined) of
+        undefined ->
+            %% 表不可用（如未启动 mnesia）时当作没有规则，下次再试
+            try refresh_rules(), persistent_term:get(?RULES_KEY)
+            catch _:_ -> #{}
+            end;
+        M -> M
+    end.
+
+%% @doc 按表重建规则缓存（事件 → 启用规则，按创建时间排序；没有启用规则的事件不出现）。
+%% 加锁串行：并发写入时最后一次重建一定读到全部写入。
+-spec refresh_rules() -> ok.
+refresh_rules() ->
+    global:trans({?RULES_KEY, self()},
+                 fun() ->
+                         M = lists:foldr(fun(#lg_alert_rule{event = E, enabled = true} = R, Acc) ->
+                                                 Acc#{E => [R | maps:get(E, Acc, [])]};
+                                            (_, Acc) -> Acc
+                                         end, #{}, rules()),
+                         persistent_term:get(?RULES_KEY, undefined) =:= M orelse persistent_term:put(?RULES_KEY, M)
+                 end, [node()]),
+    ok.
 
 -spec rule_to_map(#lg_alert_rule{}) -> map().
 rule_to_map(#lg_alert_rule{id = Id, event = E, threshold = T, channels = Cs, enabled = En,

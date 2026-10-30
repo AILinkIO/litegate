@@ -338,7 +338,8 @@ enqueue(Sized, MaxBytes, #{queue := Q, len := Len, bytes := Bytes} = S) ->
                     true ->
                         {AQ, ALen, ABytes, ADrop + 1, AStrip};
                     false ->
-                        {[{Sp1, Sz1} | AQ], ALen + 1, ABytes + Sz1, ADrop, AStrip + DidStrip}
+                        {[{Sp1, Sz1} | AQ], ALen + 1, ABytes + Sz1, ADrop,
+                         AStrip + case DidStrip of true -> 1; false -> 0 end}
                 end
             end,
             {Q, Len, Bytes, 0, 0},

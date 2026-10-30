@@ -5,7 +5,9 @@
 %%   {sse, Frames}                     200 + text/event-stream，逐帧发送
 %%   {sse_slow, Frames, DelayMs}       每帧之间暂停 DelayMs
 %%   {delay, Ms, Resp}                 先等待 Ms 再按 Resp 回复
+%%   {body_delay, Ms, Status, Body}    立即发 JSON 响应头，Ms 后再发响应体（Body 为 map 或 binary）
 %%   {raw, Status, ContentType, Body}  原样返回（如 HTML 页面）
+%%   {chunked, Status, ContentType, Chunk, N}  分块发送 N 次 Chunk（大响应体，不在内存里拼整体）
 -module(lg_mock_upstream).
 -behaviour(cowboy_handler).
 
@@ -59,8 +61,19 @@ init(Req0, State) ->
 reply({delay, Ms, Resp}, Req) ->
     timer:sleep(Ms),
     reply(Resp, Req);
+reply({body_delay, Ms, Status, Body}, Req0) ->
+    Req = cowboy_req:stream_reply(Status, #{<<"content-type">> => <<"application/json">>}, Req0),
+    timer:sleep(Ms),
+    cowboy_req:stream_body(case is_map(Body) of true -> json:encode(Body); false -> Body end, fin, Req),
+    Req;
 reply({raw, Status, CT, Body}, Req) ->
     cowboy_req:reply(Status, #{<<"content-type">> => CT}, Body, Req);
+reply({chunked, Status, CT, Chunk, N}, Req0) ->
+    Req = cowboy_req:stream_reply(Status, #{<<"content-type">> => CT}, Req0),
+    %% 网关中途断开时 stream_body 会失败，忽略即可
+    _ = catch lists:foreach(fun(_) -> cowboy_req:stream_body(Chunk, nofin, Req) end, lists:seq(1, N)),
+    _ = catch cowboy_req:stream_body(<<>>, fin, Req),
+    Req;
 reply({json, Status, Headers, Body}, Req) ->
     B = case is_map(Body) of true -> json:encode(Body); false -> Body end,
     cowboy_req:reply(Status, maps:merge(#{<<"content-type">> => <<"application/json">>}, Headers),

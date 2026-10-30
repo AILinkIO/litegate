@@ -46,6 +46,15 @@ sudo systemctl enable --now litegate
 | 健康检查 | `curl http://localhost:4000/health` |
 | 指标 | `curl http://localhost:4000/metrics`（设置了 `metrics_token` 时需 Bearer） |
 
+### 关停与资源上限
+
+- 收到 SIGTERM 后先暂停监听，最多等 `shutdown_drain_ms`（默认 20s）让在途请求完成，期间 HTTP/1.1 响应带
+  `connection: close`；随后关闭监听，存储最后 flush。systemd 的 `TimeoutStopSec` 与 compose 的
+  `stop_grace_period` 需不小于 60s（已在 `deploy/litegate.service`、`docker-compose.yml` 中配置）。
+- 文件句柄上限 65536（systemd `LimitNOFILE`、compose `ulimits.nofile`），与 vm.args 的 `+Q 65536` 对齐。
+- mnesia 以 permanent 方式运行：mnesia 自行退出时整个节点退出，由 systemd / docker 拉起；
+  mnesia 未运行时 `/health` 返回 503。
+
 ## 备份
 
 整个 `/var/lib/litegate` 即全部状态：`mnesia/`（配置）、`store/`（日志、用量、检索）、`secret.key`（未设置
@@ -60,7 +69,13 @@ sudo tar -xzf litegate-<新版本>.tar.gz -C /opt/litegate
 sudo systemctl start litegate
 ```
 
-mnesia 表结构升级在启动时自动执行（`lg_schema`）；数据目录无需改动。
+mnesia 表结构升级在启动时自动执行（`lg_schema`）；数据目录无需改动。升级前自动备份到
+`<data_dir>/mnesia-backup-v<N>-<ts>.bup`（每个版本只备份一次）。升级按表记录进度，中途崩溃后重启会继续完成。
+
+存储派生数据（每小时用量总量与费用分解、错误日志索引、响应缓存 / Responses 过期索引）在升级后由 janitor
+在后台自动回填：启动约 10 秒后开始，逐小时重算历史用量、解码日志补错误索引、扫描缓存补过期索引，可中断续跑，
+数据量大时可能持续数分钟；回填完成前概览、`errors_only` 查询与预算重建走原有路径，结果不变。原有键与值格式
+不变，可直接降级回上一版本（新增的派生数据会被忽略）；降级后再升级会自动补上降级期间写入的数据。
 
 ## 安全须知
 
@@ -68,8 +83,11 @@ mnesia 表结构升级在启动时自动执行（`lg_schema`）；数据目录�
   服务默认只绑定 `127.0.0.1`；绑定非 loopback 地址且未开启登录时，启动日志和控制台顶部会出现安全提示。
   端口对外开放时，请开启登录（先在「用户」页创建管理员，再把运行参数 `console_auth` 设为 true），
   或用防火墙 / 反向代理限制 `/console` 与 `/api` 的访问来源。
-- 节点名固定为 `litegate@127.0.0.1`（mnesia 数据与节点名绑定，主机名变化不影响）；Erlang 分布式端口与 epmd
-  只监听本机，cookie 自动生成在 `$HOME/.erlang.cookie`。
+- 节点名固定为 `litegate@127.0.0.1`（mnesia 数据与节点名绑定，主机名变化不影响；`rebar3 shell` 使用同一节点名，
+  eunit 使用 `litegate_test@127.0.0.1`）；Erlang 分布式端口与 epmd 只监听本机，cookie 自动生成在 `$HOME/.erlang.cookie`。
+- 以其他节点名打开已有数据目录时拒绝启动（`node_name_mismatch`），不会改写数据。确需改名时停服后执行：
+  `erl -noshell -pa /opt/litegate/lib/*/ebin -name <新名> -mnesia dir '"<数据目录>/mnesia"' -eval "ok = lg_schema:rename_node('<旧名>'), halt()."`，
+  原目录保留为 `mnesia.pre-rename-<时间戳>`，确认无误后可删除。
 
 ## 多实例部署
 

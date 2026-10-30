@@ -15,6 +15,7 @@
 -define(LAST, lg_health_last).    %% {{Target, ok | error}, AtMs, Kind, Message}
 -define(PROBE, lg_health_probe).  %% {CredId, AtMs, ok | Kind, Message, LatencyMs}
 -define(WINDOW_MIN, 5).
+-define(LAST_TTL_MS, 24 * 3600000).  %% 最近结果 24h 无更新删除（通配代入的模型名无界，T32）
 -define(KINDS, [rate_limit, credit, quota, unserved, server, network, timeout, auth, client, internal]).
 
 -type target() :: {binary(), binary()}.
@@ -93,6 +94,7 @@ handle_info(sweep, S) ->
     Old = lg_time:now_ms() div 60000 - ?WINDOW_MIN,
     ets:select_delete(?WIN, [{{{'_', '$1'}, '_', '_', '_', '_', '_', '_', '_', '_', '_', '_', '_', '_', '_'},
                               [{'<', '$1', Old}], [true]}]),
+    ets:select_delete(?LAST, [{{'_', '$1', '_', '_'}, [{'<', '$1', lg_time:now_ms() - ?LAST_TTL_MS}], [true]}]),
     erlang:send_after(60000, self(), sweep),
     {noreply, S};
 handle_info(probe, S) ->

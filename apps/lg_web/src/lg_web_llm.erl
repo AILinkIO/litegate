@@ -5,6 +5,7 @@
 %%
 %% 流式请求在上游返回 2xx 响应头之后才向客户端发 200，开流前的失败仍可回退并返回正常错误码。
 %% 流式处理进程 trap_exit：客户端断开时 cowboy 发来 shutdown，中止上游并照常记账。
+%% 非流式同样 trap_exit（T20）：排队、等待上游期间断开即取消上游；两者开流 / 回复前断开都记 499（client_closed）。
 %%
 %% /api/playground/*（source = playground）：控制台管理员身份代替网关 Key，使用内置 Key `playground`
 %% （不受路由访问列表约束），日志 source = playground；响应头附带命中的上游与尝试次数。
@@ -19,7 +20,8 @@ init(Req00, #{format := F} = State) ->
     Id = lg_store:new_id(),
     Req0 = cowboy_req:set_resp_header(<<"x-request-id">>, Id, Req00),
     Req = case cowboy_req:method(Req0) of
-              <<"POST">> -> handle(F, maps:get(kind, State, chat), maps:get(source, State, gateway), Req0);
+              <<"POST">> ->
+                  handle(F, maps:get(kind, State, chat), maps:get(source, State, gateway), Req0);
               _ -> lg_web_util:error_reply(F, 405, <<"invalid_request_error">>,
                                            <<"Method not allowed">>, Req0)
           end,
@@ -183,7 +185,11 @@ prepare(responses, #{<<"previous_response_id">> := Prev} = Body, Ctx) when is_bi
 prepare(_F, Body, Ctx) ->
     {ok, Body, Ctx}.
 
-sync(F, Body, #{kind := Kind} = Ctx, Req) ->
+%% T20：trap_exit 后客户端断开不再直接结束进程。排队、等待上游响应头时 client_tick 抛出 client_exit，
+%% 路由层取消上游并以 client_closed 结束；上游已回复后才断开的照常计费。两种情况日志都记 499
+sync(F, Body, #{kind := Kind} = Ctx0, Req) ->
+    process_flag(trap_exit, true),
+    Ctx = Ctx0#{idle => fun client_tick/0},
     Res = case Kind of
               chat -> lg_router:chat(F, Body, Ctx);
               embeddings -> lg_router:embeddings(Body, Ctx);
@@ -192,7 +198,14 @@ sync(F, Body, #{kind := Kind} = Ctx, Req) ->
               systemone -> lg_router:systemone(Body, Ctx);
               count_tokens -> lg_router:count_tokens(Body, Ctx)
           end,
+    Gone = receive {'EXIT', _, _} -> true after 0 -> false end,
     case Res of
+        {error, #{kind := client_closed} = Err, Out} ->
+            closed(Ctx, F, false, Body, Out#{error => Err});
+        {ok, _, Out} when Gone ->
+            closed(Ctx, F, false, Body, Out);
+        {error, Err, Out} when Gone ->
+            closed(Ctx, F, false, Body, Out#{error => Err});
         {ok, Resp0, Out} ->
             Resp = case Kind of
                        speech -> Resp0;
@@ -239,6 +252,8 @@ stream(F, Body, Ctx, Req0) ->
     Res = lg_router:stream_open(F, Body, Ctx#{idle => fun hold_tick/0, hold_started => Started}),
     #{sent := Sent} = erase(lg_hold),
     case Res of
+        {error, #{kind := client_closed} = Err, Out} ->
+            closed(Ctx, F, true, Body, Out#{error => Err});
         {ok, S, Out} ->
             lg_metrics:track(litegate_active_streams, self()),
             Req = case Sent of
@@ -265,6 +280,7 @@ sse_headers() ->
       <<"x-accel-buffering">> => <<"no">>}.
 
 hold_tick() ->
+    client_tick(),
     #{req := Req0, sent := Sent, last := Last, started := Started} = H = get(lg_hold),
     Now = lg_time:now_ms(),
     case Sent of
@@ -281,6 +297,21 @@ hold_tick() ->
             put(lg_hold, H#{last => Now});
         _ -> ok
     end.
+
+%% 客户端断开（cowboy 因连接关闭发来 shutdown）时中止等待：路由层取消上游并以 client_closed 结束（T20）
+client_tick() ->
+    receive {'EXIT', _, R} -> throw({client_exit, R}) after 0 -> ok end.
+
+%% 客户端已断开、不再回复：日志记 499（record 内调用 lg_router:done 归还名额、按已产生的用量计费）
+-spec closed(map(), atom(), boolean(), map(), map()) -> no_return().
+closed(Ctx, F, Stream, Body, Out0) ->
+    Out = case Out0 of
+              #{error := _} -> Out0;
+              _ -> Out0#{error => #{kind => client_closed, message => <<"Client closed the connection before the response">>}}
+          end,
+    lg_metrics:inc(litegate_client_closed_total, [{route, maps:get(route, Out)}]),
+    lg_web_llm_log:record(Ctx, F, Stream, Body, Out#{client_aborted => true}, 499),
+    exit(shutdown).
 
 %% Ttft：写出首个实际内容时距请求开始的毫秒数（尚未出现时为 undefined）
 pump(S, {Ctx, F, Body, Out, Ttft}, Req) ->
@@ -300,6 +331,7 @@ pump(S, {Ctx, F, Body, Out, Ttft}, Req) ->
             Req;
         {exit, Reason, Result} ->
             Final = (lg_router:finalize(Out, Result))#{client_aborted => true},
+            lg_metrics:inc(litegate_client_closed_total, [{route, maps:get(route, Out)}]),
             lg_web_llm_log:record(Ctx, F, true, Body, with_ttft(Final, Ttft), 200),
             %% 节点关停时连接进程被 ranch kill，链接传来 killed；已记账，按 shutdown 退出免得刷崩溃报告
             exit(case Reason of killed -> shutdown; _ -> Reason end)

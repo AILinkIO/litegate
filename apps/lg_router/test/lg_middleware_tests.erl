@@ -46,7 +46,9 @@ builtins(_) ->
     Run = lg_middleware:begin_run(<<"any">>, #{}),
     ?assertNot(lg_middleware:has(Run, on_request)),
     ?assert(lg_middleware:has(Run, on_event)),
-    ?assert(lg_middleware:has(Run, on_response)).
+    ?assert(lg_middleware:has(Run, on_response)),
+    %% T32：内置实现在当前进程运行（不拷贝请求体）
+    ?assertMatch([#{isolate := false}], lg_middleware:chain(<<"any">>)).
 
 %% 写一个插件模块的源码并编译到插件目录
 plugin(Dir, Mod, Body) ->
@@ -79,6 +81,8 @@ plugins(#{plugins := Dir}) ->
     {ok, #lg_middleware{}} = lg_middlewares:create(#{<<"name">> => <<"p">>, <<"impl">> => <<"plug">>}),
     Req = fun() -> lg_middleware:request(lg_middleware:begin_run(<<"r">>, #{}), #{}) end,
     ?assertMatch({reject, 403, <<"v1">>, _}, Req()),
+    %% T32：插件在独立进程中运行（可被超时打断）
+    ?assertMatch([#{isolate := true}], lg_middleware:chain(<<"r">>)),
     %% 改了重新编译、再扫描：热替换
     plugin(Dir, mw_plug, plug_src("v2")),
     _ = lg_middleware:rescan(),
@@ -115,6 +119,22 @@ remote(_) ->
         [#lg_middleware{id = Id}] = lg_middlewares:list(),
         {ok, _} = lg_middlewares:update(Id, #{<<"options">> => Opts#{<<"events">> => false}}),
         ?assertNot(lg_middleware:has(lg_middleware:begin_run(<<"r">>, #{}), on_event)),
+        %% T32：remote 在当前进程运行，超时由 erpc 打断：按时放行、计入失败、迟到的回复不进请求进程的邮箱
+        Forms = [begin {ok, Ts, _} = erl_scan:string(L), {ok, Fm} = erl_parse:parse_form(Ts), Fm end
+                 || L <- ["-module(slow_mw).", "-export([on_request/3]).",
+                          "on_request(_, _, _) -> timer:sleep(1000), continue."]],
+        {ok, slow_mw, SBin} = compile:forms(Forms, [binary]),
+        {module, slow_mw} = erpc:call(Node, code, load_binary, [slow_mw, "slow_mw.erl", SBin]),
+        {ok, _} = lg_middlewares:update(Id, #{<<"options">> => Opts#{<<"module">> => <<"slow_mw">>, <<"timeout_ms">> => 100,
+                                                                     <<"events">> => false}}),
+        #{Id := #{failures := F0}} = lg_middleware:stats(),
+        T0 = erlang:monotonic_time(millisecond),
+        ?assertMatch({ok, _, _}, lg_middleware:request(lg_middleware:begin_run(<<"r">>, #{route => <<"r">>}), Body(<<"forbidden">>))),
+        ?assert(erlang:monotonic_time(millisecond) - T0 < 800),
+        #{Id := #{failures := F1, last_error := #{message := TMsg}}} = lg_middleware:stats(),
+        ?assertEqual(F0 + 1, F1),
+        ?assertMatch({match, _}, re:run(TMsg, "timeout")),
+        receive Stray -> ?assertEqual(no_stray_message, Stray) after 1200 -> ok end,
         %% 节点停掉：放行并计入失败
         peer:stop(Peer),
         ?assertMatch({ok, _, _}, lg_middleware:request(lg_middleware:begin_run(<<"r">>, #{route => <<"r">>, format => openai}), Body(<<"forbidden">>))),

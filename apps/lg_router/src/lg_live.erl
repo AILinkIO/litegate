@@ -22,6 +22,7 @@
 -define(BUCKET_MS, 10000).
 -define(WINDOW_MS, 300000).
 -define(KEEP_MS, 1800000).
+-define(LAST_TTL_MS, 24 * 3600000).  %% 路由最近一次叙述 24h 无更新删除（通配路由名无界，T32）
 -define(MAX_BACKLOG, 1000).
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
@@ -252,6 +253,7 @@ handle_info(prune, S) ->
     Now = lg_time:now_ms(),
     Old = (Now - ?KEEP_MS) div ?BUCKET_MS,
     _ = ets:select_delete(?STATS, [{{{'_', '_', '_', '$1'}, '_', '_', '_'}, [{'<', '$1', Old}], [true]}]),
+    _ = ets:select_delete(?STATS, [{{{last, '_'}, '_', '$1'}, [{'<', '$1', Now - ?LAST_TTL_MS}], [true]}]),
     Stale = Now - lg_config:get(upstream_timeout_ms) - 60000,
     _ = [ets:delete(?ACTIVE, Id) || {Id, #{started_at := At}} <- ets:tab2list(?ACTIVE), At < Stale],
     _ = [ets:delete(?DROPPED, P) || {P, _} <- ets:tab2list(?DROPPED), not is_process_alive(P)],

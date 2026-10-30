@@ -33,6 +33,8 @@ router_test_() ->
       ?_test(affinity_choose()),
       ?_test(cooldown_sweep()),
       ?_test(affinity_token_sweep()),
+      ?_test(affinity_counts()),
+      {timeout, 60, ?_test(rotate_bench())},
       ?_test(strategies()),
       ?_test(timezone_note()),
       ?_test(skip_rules()),
@@ -361,8 +363,12 @@ cooldown_kinds() ->
     Near(2000, lg_cooldown:remaining_ms({C, <<"a">>})),
     ?assertMatch(#{streak := 2, scope := target}, lg_cooldown:info({C, <<"a">>})),
     ?assertNot(lg_cooldown:cooling({C, <<"b">>})),
-    %% 上限：限流 30 分钟、服务端 10 分钟
+    %% 上限：服务端 10 分钟。无 Retry-After 的限流：出站自适应限流开启（默认）时固定基础时长、不翻倍
+    %% （速率整形交给 AIMD，见 D03 §3.4）；关闭时按连续次数翻倍，上限 30 分钟
+    ?assertEqual(1000, lg_cooldown:duration(rate_limit, #{}, 30)),
+    ok = lg_config:set(out_rate_enabled, false),
     ?assertEqual(1800000, lg_cooldown:duration(rate_limit, #{}, 30)),
+    ok = lg_config:unset(out_rate_enabled),
     ?assertEqual(600000, lg_cooldown:duration(server, #{}, 30)),
     ?assertEqual(6000, lg_cooldown:duration(auth, #{}, 1)),
     %% Retry-After 优先，上限 1 小时
@@ -447,11 +453,11 @@ backup() ->
     %% 备份文件可用同一口令 dry-run 导入（内容完整可还原）
     {ok, Bin} = file:read_file(filename:join([lg_config:get(data_dir), <<"backups">>, F1])),
     {ok, _} = lg_config_io:import(json:decode(Bin), <<"passphrase-123">>, merge, true),
-    %% 滚动保留：备 3 份只留 2 份（文件名秒级时间戳，间隔 1 秒保证不同名）
-    timer:sleep(1100),
+    %% 滚动保留：备 3 份只留 2 份（T33：文件名精确到毫秒，同一秒内连续备份也不互相覆盖）
     {ok, #{file := F2}} = lg_backup:run(),
-    timer:sleep(1100),
     {ok, #{file := F3}} = lg_backup:run(),
+    ?assert(F1 =/= F2 andalso F2 =/= F3),
+    ?assertMatch({match, _}, re:run(F3, "^litegate-backup-\\d{8}-\\d{6}-\\d{3}\\.json$")),
     Files = [F || #{file := F} <- lg_backup:list()],
     ?assertEqual([F3, F2], Files),
     %% 状态与列表
@@ -461,6 +467,20 @@ backup() ->
     ok = lg_backup:delete(F2),
     {error, invalid_name} = lg_backup:delete(<<"../settings.dets">>),
     {error, invalid_name} = lg_backup:delete(<<"other.json">>),
+    %% 旧的秒级文件名照常可删
+    ?assertEqual({error, not_found}, lg_backup:delete(<<"litegate-backup-20260101-000000.json">>)),
+    %% T33：备份目录不可用（同名普通文件占位）→ 返回错误、记状态，gen_server 存活
+    Dir = filename:join(lg_config:get(data_dir), <<"backups">>),
+    _ = [file:delete(filename:join(Dir, F)) || #{file := F} <- lg_backup:list()],
+    ok = file:del_dir(Dir),
+    ok = file:write_file(Dir, <<"not a dir">>),
+    Pid = whereis(lg_backup),
+    ?assertMatch({error, {backup_dir, _}}, lg_backup:run()),
+    ?assertMatch(#{ok := false}, lg_backup:status()),
+    ?assertEqual(Pid, whereis(lg_backup)),
+    ?assertEqual([], lg_backup:list()),
+    ok = file:delete(Dir),
+    ?assertMatch({ok, _}, lg_backup:run()),
     ok = lg_config:set(backup_keep, 14),
     ok = lg_config:set(backup_passphrase, <<>>).
 
@@ -596,7 +616,7 @@ affinity_choose() ->
     ?assertEqual({Plan, {broken, <<"target_gone">>}}, lg_affinity:choose(Plan, <<"r">>, <<"s">>, <<"auto">>, false)),
     %% rotate 用的会话计数
     ok = lg_affinity:put_target(<<"r">>, <<"s2">>, {A, <<"ma">>}, 0),
-    ?assertEqual(#{{B, <<"gone">>} => 1, {A, <<"ma">>} => 1}, lg_affinity:load(<<"r">>, 60000)),
+    ?assertEqual(#{{B, <<"gone">>} => 1, {A, <<"ma">>} => 1}, lg_affinity:load(<<"r">>, [{B, <<"gone">>}, {A, <<"ma">>}, {A, <<"none">>}])),
     ok = lg_affinity:clear(),
     application:unset_env(lg_core, route_max_attempts).
 
@@ -872,8 +892,80 @@ affinity_token_sweep() ->
     ok = lg_affinity:add_tokens(<<"cred-new">>, 100),
     %% 30 天前的 token → 会被清扫
     ets:insert(lg_affinity, {{tokens, <<"cred-old">>}, 100.0, Now - 31 * 86400000}),
-    ?assertEqual(2, length(length([1 || {{tokens, _}, _, _} <- ets:tab2list(lg_affinity)]))),
-    %% 30 天前的 token 会在下次 sweep 时被清
-    ?assertEqual([], ets:lookup(lg_affinity, {tokens, <<"cred-old">>})),
+    ?assertEqual(2, length([1 || {{tokens, _}, _, _} <- ets:tab2list(lg_affinity)])),
+    %% 30 天前的 token 在下次 sweep 时被清，近期的保留
+    ok = gen_server:call(lg_affinity, sweep),
     ?assertEqual([], ets:lookup(lg_affinity, {tokens, <<"cred-old">>})),
     ?assertMatch([_], ets:lookup(lg_affinity, {tokens, <<"cred-new">>})).
+
+%% T32：rotate 会话计数 — 并发写同一批会话（换目标 / 写判定）后与实际表项一致；
+%% sweep 删除闲置会话时扣减，并校正漂移的计数
+affinity_counts() ->
+    R = <<"rc">>,
+    Ts = [{<<"c", (integer_to_binary(I))/binary>>, <<"m">>} || I <- lists:seq(1, 4)],
+    Actual = fun() ->
+                     lists:foldl(fun(T, Acc) -> maps:update_with(T, fun(N) -> N + 1 end, 1, Acc) end, #{},
+                                 [T || {{R1, _}, #{target := T}} <- ets:tab2list(lg_affinity), R1 =:= R])
+             end,
+    Self = self(),
+    Pids = [spawn(fun() ->
+                          [case rand:uniform(3) of
+                               3 -> lg_affinity:put_decision(R, integer_to_binary(rand:uniform(50)), {decided, x});
+                               _ -> lg_affinity:put_target(R, integer_to_binary(rand:uniform(50)),
+                                                           lists:nth(rand:uniform(4), Ts), 0)
+                           end || _ <- lists:seq(1, 500)],
+                          Self ! {done, self()}
+                  end) || _ <- lists:seq(1, 20)],
+    [receive {done, P} -> ok end || P <- Pids],
+    A0 = Actual(),
+    ?assert(map_size(A0) > 0),
+    ?assertEqual(A0, lg_affinity:load(R, Ts)),
+    %% 判定不改变目标与计数
+    [S1 | _] = [S || {{R1, S}, #{target := _}} <- ets:tab2list(lg_affinity), R1 =:= R],
+    ok = lg_affinity:put_decision(R, S1, {decided, y}),
+    ?assertEqual(A0, lg_affinity:load(R, Ts)),
+    %% 10 个会话闲置超过 30 分钟：sweep 删除并扣减
+    Old = lg_time:now_ms() - 31 * 60000,
+    Aged = lists:sublist([K || {{R1, _} = K, #{target := _}} <- ets:tab2list(lg_affinity), R1 =:= R], 10),
+    [ets:insert(lg_affinity, {K, (lg_affinity:get(R1, S))#{last_at => Old}}) || {R1, S} = K <- Aged],
+    ok = gen_server:call(lg_affinity, sweep),
+    ?assertEqual([], [K || K <- Aged, ets:member(lg_affinity, K)]),
+    A1 = Actual(),
+    ?assertEqual(lists:sum(maps:values(A0)) - 10, lists:sum(maps:values(A1))),
+    ?assertEqual(A1, lg_affinity:load(R, Ts)),
+    %% 计数漂移（如进程在交换表项与增减计数之间被杀）：下一次 sweep 校正
+    [T1 | _] = Ts,
+    _ = ets:update_counter(lg_affinity, {route_target_count, R, T1}, 5, {{route_target_count, R, T1}, 0}),
+    ?assertNotEqual(A1, lg_affinity:load(R, Ts)),
+    ok = gen_server:call(lg_affinity, sweep),
+    ?assertEqual(A1, lg_affinity:load(R, Ts)),
+    ok = lg_affinity:clear().
+
+%% T32：10 万会话下 rotate 单次选择耗时（按目标查计数，与会话总数无关）；负载结果与原全表扫描一致
+rotate_bench() ->
+    R = <<"rb">>,
+    Ts = [{<<"b1">>, <<"m">>}, {<<"b2">>, <<"m">>}, {<<"b3">>, <<"m">>}],
+    Weights = [{lists:nth(1, Ts), 50000}, {lists:nth(2, Ts), 30000}, {lists:nth(3, Ts), 20000}],
+    _ = lists:foldl(fun({T, N}, I0) ->
+                            [ok = lg_affinity:put_target(R, integer_to_binary(I), T, 0) || I <- lists:seq(I0, I0 + N - 1)],
+                            I0 + N
+                    end, 1, Weights),
+    %% 改动前的算法：部分绑定键 match_object 全表扫描，按最近 30 分钟计数
+    From = lg_time:now_ms() - 30 * 60000,
+    {ScanUs, Scan} = timer:tc(fun() ->
+                                      lists:foldl(fun({_, #{target := T, last_at := At}}, Acc) when At >= From ->
+                                                          maps:update_with(T, fun(N) -> N + 1 end, 1, Acc);
+                                                     (_, Acc) -> Acc
+                                                  end, #{}, ets:match_object(lg_affinity, {{R, '_'}, '_'}))
+                              end),
+    ?assertEqual(maps:from_list(Weights), Scan),
+    ?assertEqual(Scan, lg_affinity:load(R, Ts)),
+    Items = [{#{credential => C, upstream_model => M}, #lg_credential{id = C}} || {C, M} <- Ts],
+    N = 5000,
+    {Us, Orders} = timer:tc(fun() -> [lg_strategy:order(<<"rotate">>, R, Items) || _ <- lists:seq(1, N)] end),
+    %% 承载最少的优先
+    ?assertEqual([[<<"b3">>, <<"b2">>, <<"b1">>]], lists:usort([[C || {#{credential := C}, _} <- O] || O <- Orders])),
+    Per = Us / N,
+    io:format(user, "~nrotate: ~.2f us/selection with 100k sessions (old full scan: ~b us)~n", [Per, ScanUs]),
+    ?assert(Per < 500),
+    ok = lg_affinity:clear().

@@ -1,6 +1,7 @@
 -module(lg_rules_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("lg_core/include/lg_core.hrl").
 
 valid_test() ->
     ?assert(lg_rules:valid_rules([])),
@@ -77,3 +78,124 @@ laya_test() ->
                  lg_laya:parse(Is, json:encode(#{<<"answers">> => #{<<"i1">> => #{<<"noul">> => 0.9}}}), 0.7)),
     ?assertEqual({error, <<"no GGUF">>}, lg_laya:parse(Is, json:encode(#{<<"error">> => #{<<"message">> => <<"no GGUF">>}}), 0.7)),
     ?assertMatch({error, _}, lg_laya:parse(Is, <<"not json">>, 0.7)).
+
+%%====================================================================
+%% T27：判断者熔断与相同判断合并（经模拟上游的判断路由）
+%%====================================================================
+
+classifier_test_() ->
+    {setup,
+     fun() ->
+             Dir = lg_core_test_util:start(),
+             {ok, _} = application:ensure_all_started(lg_router),
+             Port = lg_mock_upstream:start(),
+             Base = iolist_to_binary(["http://127.0.0.1:", integer_to_list(Port), "/v1"]),
+             {ok, #lg_credential{id = C}} = lg_credentials:create(#{<<"name">> => <<"j">>, <<"protocol">> => <<"openai">>,
+                                                                     <<"base_url">> => Base, <<"api_key">> => <<"k">>}),
+             T = #{<<"credential">> => C, <<"upstream_model">> => <<"judge-up">>},
+             {ok, _} = lg_routes:create(#{<<"name">> => <<"judge">>, <<"targets">> => [T]}),
+             {ok, _} = lg_routes:create(#{<<"name">> => <<"main">>, <<"targets">> => [T],
+                                          <<"options">> => #{<<"classifier">> => <<"judge">>,
+                                                             <<"rules">> => [#{<<"when">> => #{<<"intent">> => <<"tests">>},
+                                                                               <<"use">> => <<"judge">>}]}}),
+             {ok, _, Key} = lg_api_keys:create(#{<<"name">> => <<"k">>}),
+             {Dir, Key}
+     end,
+     fun({Dir, _}) ->
+             application:unset_env(lg_core, intent_timeout_ms),
+             application:unset_env(lg_router, classifier_open_ms),
+             lg_mock_upstream:stop(),
+             application:stop(lg_router),
+             lg_core_test_util:stop(Dir)
+     end,
+     fun({_, Key}) ->
+             [{timeout, 30, ?_test(breaker(Key))},
+              {timeout, 30, ?_test(singleflight(Key))}]
+     end}.
+
+completion(Text) ->
+    {json, 200, #{}, #{<<"id">> => <<"cc">>, <<"model">> => <<"up">>,
+                       <<"choices">> => [#{<<"index">> => 0, <<"finish_reason">> => <<"stop">>,
+                                           <<"message">> => #{<<"role">> => <<"assistant">>, <<"content">> => Text}}],
+                       <<"usage">> => #{<<"prompt_tokens">> => 1, <<"completion_tokens">> => 1}}}.
+
+decide(Key, Text) ->
+    {ok, R} = lg_routes:get(<<"main">>),
+    T0 = erlang:monotonic_time(millisecond),
+    D = lg_rules:decide(R, openai, #{<<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => Text}]},
+                        #{new_turn => true, key => Key}),
+    {maps:get(intent, D), erlang:monotonic_time(millisecond) - T0}.
+
+judge_calls() ->
+    length(lg_mock_upstream:requests()).
+
+skipped() ->
+    case ets:lookup(lg_metrics, {litegate_classifier_skipped_total, [{classifier, <<"judge">>}]}) of
+        [{_, N}] -> N;
+        [] -> 0
+    end.
+
+%% 判断模型持续超时：前 3 个请求各等满超时，第 4 个起直接跳过（不调用、无额外延迟）；
+%% 打开期过后放行一个试探请求，失败重新打开，成功恢复
+breaker(Key) ->
+    lg_affinity:clear(),
+    ets:insert(lg_mock_upstream, {requests, []}),
+    application:set_env(lg_core, intent_timeout_ms, 150),
+    application:set_env(lg_router, classifier_open_ms, 400),
+    Slow = {delay, 600, completion(<<"1">>)},
+    [lg_mock_upstream:expect(Slow) || _ <- lists:seq(1, 4)],
+    [begin
+         {I, Ms} = decide(Key, <<"q", (integer_to_binary(N))/binary>>),
+         ?assertMatch(#{error := <<"timeout">>}, I),
+         ?assert(Ms >= 150)
+     end || N <- lists:seq(1, 3)],
+    ?assertEqual(3, judge_calls()),
+    S0 = skipped(),
+    {I4, Ms4} = decide(Key, <<"q4">>),
+    ?assertMatch(#{answer := 0, error := <<"classifier circuit open">>}, I4),
+    ?assert(Ms4 < 100),
+    ?assertEqual(3, judge_calls()),
+    ?assertEqual(S0 + 1, skipped()),
+    %% 打开期过后：试探请求仍超时 → 重新打开
+    timer:sleep(450),
+    {I5, _} = decide(Key, <<"q5">>),
+    ?assertMatch(#{error := <<"timeout">>}, I5),
+    ?assertEqual(4, judge_calls()),
+    {I6, Ms6} = decide(Key, <<"q6">>),
+    ?assertMatch(#{error := <<"classifier circuit open">>}, I6),
+    ?assert(Ms6 < 100),
+    %% 再过打开期：试探成功 → 关闭，之后照常判断
+    timer:sleep(700),    %% 也等前面被放弃的判断跑完（照常记日志、计费）
+    lg_mock_upstream:expect(completion(<<"1">>)),
+    lg_mock_upstream:expect(completion(<<"0">>)),
+    {I7, _} = decide(Key, <<"q7">>),
+    ?assertMatch(#{answer := 1, classifier := <<"judge">>}, I7),
+    {I8, _} = decide(Key, <<"q8">>),
+    ?assertMatch(#{answer := 0}, I8),
+    ?assertNot(maps:is_key(error, I8)),
+    ?assertEqual(6, judge_calls()),
+    %% 被放弃的判断（超时后不再杀掉）照常记了日志
+    ?assert(intent_logs(6, 50) >= 6),
+    application:unset_env(lg_router, classifier_open_ms),
+    application:unset_env(lg_core, intent_timeout_ms).
+
+intent_logs(N, Left) ->
+    #{items := Logs} = lg_store:logs(#{tag => <<"litegate:intent">>, limit => 20}),
+    case length(Logs) of
+        L when L >= N; Left =:= 0 -> L;
+        _ -> timer:sleep(50), intent_logs(N, Left - 1)
+    end.
+
+%% 相同消息的并发判断只调用一次判断模型，其余请求拿到同一结果
+singleflight(Key) ->
+    lg_affinity:clear(),
+    ets:insert(lg_mock_upstream, {requests, []}),
+    application:set_env(lg_core, intent_timeout_ms, 2000),
+    lg_mock_upstream:expect({delay, 300, completion(<<"1">>)}),
+    Self = self(),
+    Pids = [spawn(fun() -> Self ! {self(), decide(Key, <<"same question">>)} end) || _ <- lists:seq(1, 4)],
+    Rs = [receive {P, {I, _}} -> I after 5000 -> error(timeout) end || P <- Pids],
+    ?assertEqual([1, 1, 1, 1], [A || #{answer := A} <- Rs]),
+    ?assertEqual(3, length([x || #{shared := true} <- Rs])),
+    ?assertEqual(1, judge_calls()),
+    application:unset_env(lg_core, intent_timeout_ms).

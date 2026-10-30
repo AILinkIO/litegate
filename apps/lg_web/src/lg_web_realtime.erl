@@ -129,7 +129,10 @@ websocket_init(#{call_id := CallId, credential := CId, base := Base} = State) ->
     case lg_credentials:get(CId) of
         {ok, #lg_credential{} = Cred} ->
             case upstream_ws(CallId, Base, Cred) of
-                {ok, Conn, Ref} -> {ok, State#{conn => Conn, ref => Ref}};
+                {ok, Conn, Ref} ->
+                    %% gun 进程以 retry => 0 打开：上游断开后进程退出，monitor 兜底（T19）
+                    MRef = monitor(process, Conn),
+                    {ok, State#{conn => Conn, ref => Ref, mref => MRef}};
                 {error, _} -> {stop, State}
             end;
         not_found ->
@@ -145,8 +148,13 @@ upstream_ws(CallId, Base, Cred) ->
     Path0 = maps:get(path, U, <<>>),
     Path1 = case Path0 of <<>> -> <<>>; _ -> trim(Path0) end,
     Path = <<$/, Path1/binary, "/live/", CallId/binary>>,
-    Opts = #{transport => Transport, retry => 0,
-             connect_timeout => lg_config:get(upstream_connect_timeout_ms)},
+    %% 与连接池同一套选项：HTTP/1.1（WebSocket 升级）+ TLS 证书与主机名校验、SNI
+    case lg_http_pool:conn_opts(Transport, binary_to_list(Host)) of
+        {ok, Opts} -> upstream_ws_open(Host, Port, Opts, Path, Cred);
+        {error, _} = Err -> Err
+    end.
+
+upstream_ws_open(Host, Port, Opts, Path, Cred) ->
     case gun:open(binary_to_list(Host), Port, Opts) of
         {ok, Conn} ->
             case gun:await_up(Conn, lg_config:get(upstream_connect_timeout_ms)) of
@@ -167,7 +175,13 @@ upstream_ws(CallId, Base, Cred) ->
                                     {error, ws_upgrade_failed};
                                 {gun_response, Conn, _, _, Status, _} ->
                                     gun:close(Conn),
-                                    {error, {ws_upgrade_failed, Status}}
+                                    {error, {ws_upgrade_failed, Status}};
+                                {gun_error, Conn, _, Reason} ->
+                                    gun:close(Conn),
+                                    {error, Reason};
+                                {gun_down, Conn, _, Reason, _} ->
+                                    gun:close(Conn),
+                                    {error, Reason}
                             after lg_config:get(upstream_connect_timeout_ms) ->
                                 gun:close(Conn),
                                 {error, ws_upgrade_timeout}
@@ -197,9 +211,14 @@ websocket_info({gun_ws, Conn, _, Frame}, #{conn := Conn} = State) ->
     end;
 websocket_info({gun_ws_upgrade, Conn, _, _}, #{conn := Conn} = State) ->
     {ok, State};
-websocket_info({gun_down, Conn, _, _, _, _}, #{conn := Conn} = State) ->
+%% gun 2.x：gun_down 为 5 元组；gun_error 有连接级（3 元组）与流级（4 元组）两种
+websocket_info({gun_down, Conn, _Proto, _Reason, _Killed}, #{conn := Conn} = State) ->
     {stop, State};
-websocket_info({gun_error, Conn, _}, #{conn := Conn} = State) ->
+websocket_info({gun_error, Conn, _Reason}, #{conn := Conn} = State) ->
+    {stop, State};
+websocket_info({gun_error, Conn, _StreamRef, _Reason}, #{conn := Conn} = State) ->
+    {stop, State};
+websocket_info({'DOWN', MRef, process, _, _}, #{mref := MRef} = State) ->
     {stop, State};
 websocket_info(_Info, State) ->
     {ok, State}.

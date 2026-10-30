@@ -5,5 +5,15 @@
 ## 分布式端口只监听本机（epmd 由 ERL_EPMD_ADDRESS=127.0.0.1 限定，见 deploy/litegate.service）
 -kernel inet_dist_use_interface {127,0,0,1}
 
-+K true
-+A 30
+## 调度器不忙等：容器 / 虚机共享 CPU 时空转会抢占邻居与本机其他进程（含 dirty CPU / IO 调度器）
++sbwt none
++sbwtdcpu none
++sbwtdio none
+
+## 端口（socket、文件）上限，与 nofile 65536 对齐（compose ulimits / systemd LimitNOFILE）；
+## 不设时 ERTS 按 fd 上限放大端口表，fd 上限很大的宿主上白占内存
++Q 65536
+
+## +K（OTP 21 起无效）、+A（异步线程池，文件 IO 已走 dirty IO 调度器）已移除。
+## dirty IO 调度器保持默认 10 个（+SDio）：bitcask NIF 仅 open/close/sync/merge/批量写/range 遍历
+## 走 dirty IO，并发占用约为写者数 + 少量查询 / merge，默认足够。

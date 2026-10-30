@@ -4,13 +4,16 @@
 %% 401/403 鉴权与其余 4xx 不重试。另外细分出两类可回退的额度错误（冷却时长不同，见 lg_cooldown）：
 %%   credit  余额不足（402、insufficient_quota、余额不足 …）
 %%   quota   套餐 / 时间窗口额度用尽（usage limit、限额已用完 …），reset_at 为解析出的重置时刻
+%% 上游响应体超限（too_large）记为 server 但不重试。
 %% 5xx 一律是 server（中转站的「负载已达上限」说的是负载），只有上游明确的额度错误码才算 quota。
 -module(lg_llm_error).
 
 -export([classify/1, retryable/1, to_client/3, render/4]).
 -export([reset_at/2]).
 
--type kind() :: rate_limit | credit | quota | unserved | concurrency | server | auth | client | timeout | network | internal.
+%% client_closed：客户端在网关拿到上游回复前断开（T20，网关内部产生，status 499，不回退）
+-type kind() :: rate_limit | credit | quota | unserved | concurrency | server | auth | client | timeout | network | internal
+              | client_closed.
 -define(MAX_RESET_AHEAD_MS, 8 * 24 * 3600 * 1000).
 -type error() :: #{kind := kind(),
                    status := pos_integer(),
@@ -46,6 +49,16 @@ classify({not_api_reply, Body}) ->
     mk(server, 502, <<"Upstream returned a non-API response: ", (sanitize(Snippet))/binary>>, true);
 classify(timeout) ->
     mk(timeout, 504, <<"Upstream timeout">>, true);
+%% 开流后的分级超时（lg_http）：仍按 timeout 处理（可回退；开流后由错误帧结束）
+classify({timeout, first_byte}) ->
+    mk(timeout, 504, <<"Upstream timeout (no data after response headers)">>, true);
+classify({timeout, idle}) ->
+    mk(timeout, 504, <<"Upstream stream idle timeout (no data within stream_idle_timeout_ms)">>, true);
+classify({timeout, total}) ->
+    mk(timeout, 504, <<"Upstream timeout (exceeded the total time limit)">>, true);
+%% 响应体 / SSE 事件超过上限：上游异常，换候选多半同样很大，不重试不回退（也不冷却）
+classify({too_large, Max}) ->
+    mk(server, 502, fmt("Upstream response too large (limit ~b bytes)", [Max]), false);
 classify({connect_failed, R}) ->
     mk(network, 502, fmt("Upstream connection failed: ~0p", [R]), true);
 classify({request_failed, R}) ->

@@ -1,7 +1,10 @@
 %% @doc models.dev 同步（L0）。
 %%
-%% 所有同步请求串行经过本进程，避免并发覆盖；catalog_sync_interval_ms > 0 时定时同步。
+%% 所有同步请求串行经过本进程，避免并发覆盖；catalog_sync_interval_ms > 0 时定时同步（每次调度时重读，
+%% 运行时修改下一轮生效；为 0 时每分钟检查一次是否开启）。
 %% 每次同步在一个事务内整体替换 L0：写入新数据并删除上游已下架的供应商/模型。
+%% 从网络拉取的同步要删除现有 L0 模型的 30% 以上时中止（防上游返回残缺 JSON 删掉大半目录），记为同步失败
+%% （lg_alert 的 catalog_sync_failed 据此告警）；手动导入（import/1）是明确意图，不受此限。
 %% L1 覆盖表永不触碰。最近一次同步结果记在 lg_meta 的 catalog_sync。
 -module(lg_catalog_sync).
 -behaviour(gen_server).
@@ -12,6 +15,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(FETCH_TIMEOUT, 60000).
+-define(CHECK_MS, 60000).          %% 定时同步关闭时检查配置的间隔
+-define(MAX_REMOVE_RATIO, 0.3).    %% 拉取的同步最多删除现有 L0 模型的比例
 
 %%====================================================================
 %% API
@@ -60,7 +65,11 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(periodic, State) ->
-    _ = run(lg_config:get(catalog_url), fun() -> fetch(lg_config:get(catalog_url)) end),
+    Url = lg_config:get(catalog_url),
+    _ = run(Url, fun() -> fetch(Url) end),
+    schedule(),
+    {noreply, State};
+handle_info(check, State) ->
     schedule(),
     {noreply, State};
 handle_info(_Msg, State) ->
@@ -70,19 +79,23 @@ handle_info(_Msg, State) ->
 %% 内部函数
 %%====================================================================
 
+%% 每次调度时重读间隔：> 0 按间隔同步；关闭时每分钟检查一次，开启后按新间隔调度
 schedule() ->
     case lg_config:get(catalog_sync_interval_ms) of
         N when is_integer(N), N > 0 ->
             _ = erlang:send_after(N, self(), periodic),
             ok;
         _ ->
+            _ = erlang:send_after(?CHECK_MS, self(), check),
             ok
     end.
 
 run(Source, Fetch) ->
     Start = lg_time:now_ms(),
+    %% 拉取的同步限制删除比例；手动导入不限
+    MaxRemove = case Source of import -> 1.0; _ -> ?MAX_REMOVE_RATIO end,
     Result = case Fetch() of
-                 {ok, Body} -> apply_json(Body, Start);
+                 {ok, Body} -> apply_json(Body, Start, MaxRemove);
                  {error, _} = Err -> Err
              end,
     Status = case Result of
@@ -125,9 +138,9 @@ tls_opts() ->
      {customize_hostname_check,
       [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}].
 
-apply_json(Body, Now) ->
+apply_json(Body, Now, MaxRemove) ->
     try json:decode(Body) of
-        Data when is_map(Data) -> replace_l0(normalize(Data, Now));
+        Data when is_map(Data) -> replace_l0(normalize(Data, Now), MaxRemove);
         _ -> {error, not_an_object}
     catch
         error:Reason -> {error, {bad_json, Reason}}
@@ -155,9 +168,9 @@ normalize(Data, Now) ->
               Acc
       end, {[], []}, Data).
 
-replace_l0({Providers, Models}) when Providers =:= [] ->
+replace_l0({Providers, Models}, _MaxRemove) when Providers =:= [] ->
     {error, {empty_catalog, length(Models)}};
-replace_l0({Providers, Models}) ->
+replace_l0({Providers, Models}, MaxRemove) ->
     NewP = sets:from_list([Id || #lg_catalog_provider{id = Id} <- Providers]),
     NewM = sets:from_list([K || #lg_catalog_model{key = K} <- Models]),
     %% 只写内容变化的记录，避免每次同步重写全部模型撑大 mnesia 日志
@@ -168,8 +181,15 @@ replace_l0({Providers, Models}) ->
                  mnesia:write_lock_table(lg_catalog_model),
                  StaleP = [K || K <- mnesia:all_keys(lg_catalog_provider),
                                 not sets:is_element(K, NewP)],
-                 StaleM = [K || K <- mnesia:all_keys(lg_catalog_model),
-                                not sets:is_element(K, NewM)],
+                 AllM = mnesia:all_keys(lg_catalog_model),
+                 StaleM = [K || K <- AllM, not sets:is_element(K, NewM)],
+                 %% 删除比例过高：多半是上游返回了残缺数据，中止，现有目录不动
+                 Total = length(AllM),
+                 case Total > 0 andalso length(StaleM) > Total * MaxRemove of
+                     true -> mnesia:abort({too_many_removals, #{removed_models => length(StaleM), existing_models => Total,
+                                                                new_models => length(Models)}});
+                     false -> ok
+                 end,
                  [mnesia:delete({lg_catalog_provider, K}) || K <- StaleP],
                  [mnesia:delete({lg_catalog_model, K}) || K <- StaleM],
                  [mnesia:write(P) || P <- ChangedP],

@@ -13,7 +13,7 @@
 
 -record(stream, {
     http :: lg_http:stream() | done,
-    buf = <<>> :: binary(),
+    buf = lg_sse:new() :: lg_sse:buffer(),   %% 未结束的 SSE 事件（增量扫描）
     proc :: term(),                          %% lg_stream 状态（Responses 透传时为 undefined）
     stage2 :: term(),                        %% Responses 客户端的第二级（lg_resp_stream）
     client :: format(),
@@ -67,8 +67,9 @@ responses_stream_converted(Req, Target) ->
     case lg_conv_responses:request_to_chat(Req#{<<"stream">> => true}) of
         {ok, ChatReq} ->
             case stream_open(openai, ChatReq, Target) of
-                {ok, S} ->
-                    {ok, S#stream{client = responses,
+                {ok, #stream{proc = Proc} = S} ->
+                    %% 第一级直接输出 Chat chunk map，第二级不必再解析、解码
+                    {ok, S#stream{client = responses, proc = lg_stream:map_output(Proc),
                                   stage2 = lg_resp_stream:new(#{mode => converted, request => Req})}};
                 Err ->
                     Err
@@ -100,7 +101,7 @@ stream_open_once(Client, Req, Target) ->
                     %% 要求流式却返回 JSON：业务错误按错误处理（可回退）；正常响应合成为 SSE 照常输出
                     case json_reply(Up, Status, RespH, RespBody) of
                         {ok, Sse} ->
-                            {ok, #stream{http = #{fin => true}, buf = Sse, proc = Proc(), client = Client,
+                            {ok, #stream{http = #{fin => true, body => Sse}, proc = Proc(), client = Client,
                                          timeout = Timeout, think = Think, structured = structured_state(Structured)}};
                         {error, E0} ->
                             {error, E0#{sent => maps:get(body_map, U)}}
@@ -142,12 +143,21 @@ stream_set_idle(S, F) ->
 
 -spec stream_next(#stream{}) -> {frames, [iodata()], #stream{}} | {done, [iodata()], result()}
                                 | {exit, term(), result()}.
-stream_next(#stream{http = Http, buf = Buf, timeout = Timeout, idle = Idle} = S) ->
+stream_next(#stream{http = Http, timeout = Timeout, idle = Idle} = S) ->
     Opts = case Idle of undefined -> #{}; _ -> #{idle => Idle, tick => lg_config:get(keepalive_ms)} end,
     case lg_http:stream_recv(Http, Timeout, Opts) of
         {data, Data, Http1} ->
-            {Frames, S1} = feed(<<Buf/binary, Data/binary>>, S#stream{http = Http1}),
+            {Frames, S1} = feed(Data, S#stream{http = Http1}),
+            Max = lg_config:get(sse_max_event_bytes),
+            Pending = lg_sse:buffered(S1#stream.buf),
             case S1#stream.proc =/= undefined andalso lg_stream:looped(S1#stream.proc) of
+                _ when Pending > Max ->
+                    %% 未结束的 SSE 事件超过 sse_max_event_bytes：中止上游，已解析的帧照常输出后以错误帧结束
+                    lg_http:stream_close(Http1),
+                    logger:warning("upstream response too large: phase=too_large (SSE event over ~b bytes)", [Max]),
+                    lg_metrics:inc(litegate_upstream_timeouts_total, [{phase, too_large}]),
+                    {done, Tail, Result} = stream_failed(S1#stream{http = done, buf = lg_sse:new()}, {too_large, Max}),
+                    {done, Frames ++ Tail, Result};
                 true ->
                     %% 复读：结束上游流，按正常结束收尾（结束帧由 lg_stream 按客户端格式补齐）
                     lg_http:stream_close(Http1),
@@ -157,19 +167,22 @@ stream_next(#stream{http = Http, buf = Buf, timeout = Timeout, idle = Idle} = S)
                     {frames, Frames, S1}
             end;
         {fin, Data} ->
-            {Frames, S1} = feed(<<Buf/binary, Data/binary, "\n\n">>, S#stream{http = done}),
+            {Frames, S1} = feed(<<Data/binary, "\n\n">>, S#stream{http = done}),
             {Tail, Result} = finish_all(S1),
             {done, Frames ++ Tail, Result};
         {exit, Reason} ->
             %% 调用进程收到退出信号（客户端断开）：中止上游，返回已累计的结果
             {exit, Reason, stream_abort(S)};
         {error, Reason} ->
-            %% 开流后上游失败：以客户端格式的错误帧结束
-            #{message := Msg} = E = lg_llm_error:classify(Reason),
-            {_, Result} = finish_all(S),
-            {done, [error_frame(S#stream.client, Msg)],
-             Result#{error => #{<<"message">> => Msg, <<"kind">> => maps:get(kind, E)}}}
+            stream_failed(S, Reason)
     end.
+
+%% 开流后上游失败（含分级超时、SSE 事件超限）：以客户端格式的错误帧结束
+stream_failed(S, Reason) ->
+    #{message := Msg} = E = lg_llm_error:classify(Reason),
+    {_, Result} = finish_all(S),
+    {done, [error_frame(S#stream.client, Msg)],
+     Result#{error => #{<<"message">> => Msg, <<"kind">> => maps:get(kind, E)}}}.
 
 %% @doc 是否已向客户端输出首个实际内容（TTFT 计时点）。
 -spec stream_output_started(#stream{}) -> boolean().
@@ -196,20 +209,12 @@ finish_all(#stream{proc = Proc, stage2 = St}) ->
     {F2, St2} = lg_resp_stream:finish(maps:get(usage, Result), St1),
     {F1 ++ F2, Result#{response => maps:get(response, lg_resp_stream:result(St2))}}.
 
-%% 第一级输出的 Chat SSE 帧 → Responses 事件帧
-stage2(Frames, St) ->
-    {Evs, _} = lg_sse:parse(iolist_to_binary(Frames)),
-    lists:foldl(fun(#{data := D}, {Acc, S}) when D =/= undefined, D =/= <<"[DONE]">> ->
-                        case catch json:decode(D) of
-                            M when is_map(M) ->
-                                {F, S1} = lg_resp_stream:feed(M, S),
-                                {Acc ++ F, S1};
-                            _ ->
-                                {Acc, S}
-                        end;
-                   (_, Acc) ->
-                        Acc
-                end, {[], St}, Evs).
+%% 第一级输出的 Chat chunk map（lg_stream:map_output/1）→ Responses 事件帧
+stage2(Chunks, St) ->
+    lists:foldl(fun(M, {Acc, S}) ->
+                        {F, S1} = lg_resp_stream:feed(M, S),
+                        {Acc ++ F, S1}
+                end, {[], St}, Chunks).
 
 %% @doc 客户端断开等情况下提前结束，返回已累计的结果（用于记账）。
 -spec stream_abort(#stream{}) -> result().
@@ -219,53 +224,60 @@ stream_abort(#stream{http = Http} = S) ->
     Result.
 
 %% Responses 透传：事件直接交给第二级（原样转发并累计）
-feed(Buf, #stream{proc = undefined, stage2 = St} = S) ->
-    {Events, Rest} = lg_sse:parse(Buf),
+feed(Data, #stream{proc = undefined, stage2 = St, buf = Buf} = S) ->
+    {Events, Buf1} = lg_sse:feed(Data, Buf),
     {Frames, St1} = lists:foldl(fun(Ev, {Acc, X}) ->
                                         {F, X1} = lg_resp_stream:feed(Ev, X),
                                         {[Acc, F], X1}
                                 end, {[], St}, Events),
-    {[Frames], S#stream{buf = Rest, stage2 = St1}};
-%% Responses 转换：第一级（lg_stream）输出 Chat 帧，再经第二级转成 Responses 事件
-feed(Buf, #stream{stage2 = St2} = S) when St2 =/= undefined ->
-    {Frames, S1} = feed(Buf, S#stream{stage2 = undefined}),
-    {Out, St3} = stage2(Frames, St2),
+    {[Frames], S#stream{buf = Buf1, stage2 = St1}};
+%% Responses 转换：第一级（lg_stream）输出 Chat chunk map，再经第二级转成 Responses 事件
+feed(Data, #stream{stage2 = St2} = S) when St2 =/= undefined ->
+    {Chunks, S1} = feed(Data, S#stream{stage2 = undefined}),
+    {Out, St3} = stage2(Chunks, St2),
     {Out, S1#stream{stage2 = St3}};
-feed(Buf, #stream{proc = Proc, think = Think0, structured = St0} = S) ->
-    {Events, Rest} = lg_sse:parse(Buf),
+%% 每个事件只解码一次：think 拆分、结构化输出改写、lg_stream 都在同一个 map 上处理，
+%% 被改写的事件在透传出口按 map 重新编码一次
+feed(Data, #stream{buf = Buf, proc = Proc, think = Think0, structured = St0} = S) ->
+    {Events, Buf1} = lg_sse:feed(Data, Buf),
     {Frames, Proc1, Think1, St1} =
-        lists:foldl(fun(Ev0, {Acc, P, T, St}) ->
-                            {Ev1, T1} = think_event(Ev0, T),
-                            {Ev, St2} = structured_event(Ev1, St),
-                            {F, P1} = lg_stream:feed(Ev, P),
+        lists:foldl(fun(#{raw := Raw0} = Ev, {Acc, P, T, St}) ->
+                            J0 = decode(Ev),
+                            {Raw1, J1, T1} = think_event(Raw0, J0, T),
+                            {Raw, J, St2} = structured_event(Ev, Raw1, J1, St),
+                            {F, P1} = lg_stream:feed_decoded(Raw, J, P),
                             {[F | Acc], P1, T1, St2}
                     end, {[], Proc, Think0, St0}, Events),
-    {lists:append(lists:reverse(Frames)), S#stream{buf = Rest, proc = Proc1, think = Think1, structured = St1}}.
+    {lists:append(lists:reverse(Frames)), S#stream{buf = Buf1, proc = Proc1, think = Think1, structured = St1}}.
+
+%% 事件 data 解码；[DONE]、无 data、非 JSON 为 undefined
+decode(#{data := D}) when is_binary(D), D =/= <<"[DONE]">> ->
+    try json:decode(D) catch error:_ -> undefined end;
+decode(_) ->
+    undefined.
 
 structured_state(undefined) -> undefined;
 structured_state(json) -> undefined;
 structured_state(Name) -> {Name, []}.
 
-structured_event(Ev, undefined) ->
-    {Ev, undefined};
-structured_event(Ev, {Name, Idx}) ->
-    {Ev1, Idx1} = lg_structured:stream_event({Ev, Idx}, Name),
-    {Ev1, {Name, Idx1}}.
-
-%% think_tags = split：改写上游 chunk 的 content / reasoning_content（同协议透传时也生效，raw 随之重写）
-think_event(Ev, undefined) ->
-    {Ev, undefined};
-think_event(#{data := D} = Ev, T) when is_binary(D), D =/= <<"[DONE]">> ->
-    case catch json:decode(D) of
-        #{<<"choices">> := [_ | _]} = J ->
-            {J1, T1} = lg_think:feed_chunk(J, T),
-            D1 = iolist_to_binary(json:encode(J1)),
-            {Ev#{data => D1, raw => iolist_to_binary(lg_sse:encode(D1))}, T1};
-        _ ->
-            {Ev, T}
+structured_event(_Ev, Raw, J, undefined) ->
+    {Raw, J, undefined};
+structured_event(#{event := E}, Raw, J, {Name, Idx}) when is_map(J) ->
+    case lg_structured:stream_event({J, Idx}, Name) of
+        {keep, Idx1} -> {Raw, J, {Name, Idx1}};
+        {{rewrite, J1}, Idx1} -> {{encode, E}, J1, {Name, Idx1}}
     end;
-think_event(Ev, T) ->
-    {Ev, T}.
+structured_event(_Ev, Raw, J, St) ->
+    {Raw, J, St}.
+
+%% think_tags = split：改写上游 chunk 的 content / reasoning_content（同协议透传时也生效，raw 按 data-only 帧重新编码）
+think_event(Raw, J, undefined) ->
+    {Raw, J, undefined};
+think_event(_Raw, #{<<"choices">> := [_ | _]} = J, T) ->
+    {J1, T1} = lg_think:feed_chunk(J, T),
+    {{encode, undefined}, J1, T1};
+think_event(Raw, J, T) ->
+    {Raw, J, T}.
 
 %% @doc 客户端格式的错误帧（开流后失败时结束流）。
 -spec error_frame(format(), binary()) -> iodata().

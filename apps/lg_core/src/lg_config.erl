@@ -11,10 +11,11 @@
 
 -include("lg_core.hrl").
 
--export([get/1, set/2, unset/1, all/0, defaults/0, data_dir/0, restart_keys/0]).
+-export([get/1, set/2, unset/1, all/0, defaults/0, data_dir/0, restart_keys/0, invalidate_all/0]).
 
 -define(PT_DEFAULTS, {?MODULE, defaults}).
--define(PT_CACHE, {?MODULE, cache}).
+-define(CACHE, lg_config_cache).          %% 表由 lg_config_cache 进程持有
+-define(VER, {?MODULE, version}).         %% 缓存版本号（与 atom 配置键不冲突）
 
 %% @doc 已知配置项及默认值。
 -spec defaults() -> #{atom() => term()}.
@@ -26,12 +27,22 @@ defaults() ->
       %% 控制台 / API 监听地址；单机默认只允许 loopback，容器部署需显式绑定 0.0.0.0
       http_bind => <<"127.0.0.1">>,
       max_body_bytes => 32 * 1024 * 1024,
+      %% 监听器连接上限；关停时排空在途请求的最长等待（T24）
+      http_max_connections => 16384,
+      shutdown_drain_ms => 20000,
       %% models.dev 同步
       catalog_url => <<"https://models.dev/api.json">>,
       catalog_sync_interval_ms => 0,          %% 0 = 不自动同步
       %% 上游请求
       upstream_connect_timeout_ms => 10000,
       upstream_timeout_ms => 300000,
+      %% 上游连接池：每个主机保留的空闲连接数上限（T29）
+      upstream_pool_idle_max => 128,
+      %% 流式：首包后块间最长空闲、整个流的最长时长；上游响应体与单个 SSE 事件的大小上限（T25）
+      stream_idle_timeout_ms => 120000,
+      stream_max_ms => 1800000,
+      upstream_max_body_bytes => 64 * 1024 * 1024,
+      sse_max_event_bytes => 8 * 1024 * 1024,
       %% 出站请求的 User-Agent（请求头里已有时不覆盖，如凭证自定义头），空为不发送
       user_agent => <<"BeamAI LiteGate">>,
       %% 路由：一次请求最多尝试的上游目标数（含回退），失败目标的默认冷却时长
@@ -88,6 +99,9 @@ defaults() ->
       out_rate_wait => queue,   %% queue（窗口滚动后放行）| fail（立即 429）
       %% 交互数据
       record_messages => true,
+      %% 存储写入积压降级（T21）：写者队列超过 soft 丢弃对话与检索文档，超过 hard 只保留用量
+      store_queue_soft => 5000,
+      store_queue_hard => 50000,
       log_retention_days => 30,        %% 日志、对话、索引保留天数，0 = 永久
       usage_retention_days => 400,     %% 小时用量汇总保留天数，0 = 永久
       %% 配置自动备份：口令推荐用环境变量 LITEGATE_BACKUP_PASSPHRASE 设置（不落在 mnesia 里）
@@ -97,6 +111,8 @@ defaults() ->
       backup_passphrase => <<>>,       %% 导出加密口令（≥ 8 字节），为空时备份报错
       %% 告警：同一事件在静默期内只通知一次
       alert_silence_ms => 30 * 60 * 1000,
+      %% 上游恢复需持续健康这么久才发恢复通知，避免故障/恢复抖动刷屏（T27）
+      alert_recover_ms => 60000,
       %% /metrics 抓取令牌，非空时要求 Authorization: Bearer <token>
       metrics_token => <<>>,
       %% 控制台登录：false（默认，单机）时控制台与管理 API 无需登录，访问者视为管理员
@@ -114,25 +130,67 @@ defaults() ->
 %% @doc 仅在启动时读取的配置项（T13：控制台显示"需重启生效"徽标）。
 -spec restart_keys() -> [atom()].
 restart_keys() ->
-    [data_dir, http_port, http_bind, max_body_bytes, tls_enabled, tls_port,
+    [data_dir, http_port, http_bind, max_body_bytes, http_max_connections,
+     tls_enabled, tls_port,
      tls_cert_file, tls_key_file].
 
-%% 两级缓存：persistent_term 缓存 defaults（避免每次重建 ~60 项 map）+ 已解析值 map（避免 mnesia dirty_read）
-%% set/unset 只移除对应 key 的缓存条目，其他 key 的缓存不受影响
-%% 命中缓存零 mnesia 访问；miss 走 resolve 后回填
+%% 两级缓存：persistent_term 缓存 defaults（避免每次重建 ~60 项 map）+ ETS 缓存上两层的解析结果
+%% （避免 mnesia dirty_read 与 os:getenv）。缓存条目为 {Key, {value, V}}（运行参数 / 环境变量层命中）
+%% 或 {Key, lower}（两层都没有），lower 时实时读 sys.config 应用环境与默认值（均为一次 ETS / map 查找）。
+%% 环境变量在首次读取时进入缓存，运行中修改需调用 invalidate_all/0。
+%% 回填期间若有写入（版本号变化）则撤销回填，防止把刚失效的旧值写回（T18）
 -spec get(atom()) -> term().
 get(Key) ->
     case maps:find(Key, pterm_defaults()) of
         {ok, Default} ->
-            Cache = persistent_term:get(?PT_CACHE, #{}),
-            case maps:find(Key, Cache) of
-                {ok, V} -> V;
-                error ->
-                    V = element(1, resolve(Key, Default)),
-                    persistent_term:put(?PT_CACHE, Cache#{Key => V}),
-                    V
+            Upper = try ets:lookup(?CACHE, Key) of
+                        [{_, U}] -> U;
+                        [] -> fill(Key, Default)
+                    catch
+                        error:badarg -> upper(Key, Default)  %% lg_core 未启动：不缓存
+                    end,
+            case Upper of
+                {value, V} -> V;
+                lower -> application:get_env(lg_core, Key, Default)
             end;
         error -> error({unknown_config, Key})
+    end.
+
+fill(Key, Default) ->
+    Ver = version(),
+    U = upper(Key, Default),
+    true = ets:insert(?CACHE, {Key, U}),
+    %% 写入方顺序是"写存储 → 版本 +1 → 删条目"：版本没变说明 upper 读到的不早于最近一次写入；
+    %% 版本变了则本次回填可能是旧值，撤销（最多多一次 miss）
+    version() =:= Ver orelse ets:delete(?CACHE, Key),
+    U.
+
+%% 运行参数层与环境变量层
+upper(Key, Default) ->
+    case runtime(Key) of
+        {ok, V} -> {value, V};
+        error ->
+            case os_env(Key, Default) of
+                {ok, V} -> {value, V};
+                error -> lower
+            end
+    end.
+
+version() ->
+    case ets:lookup(?CACHE, ?VER) of
+        [{_, N}] -> N;
+        [] -> 0
+    end.
+
+%% @doc 清空全部已解析值缓存（配置导入 / 恢复、运行中修改环境变量后调用）。
+-spec invalidate_all() -> ok.
+invalidate_all() ->
+    try
+        _ = ets:update_counter(?CACHE, ?VER, 1, {?VER, 0}),
+        _ = ets:select_delete(?CACHE, [{{'$1', '_'}, [{'=/=', '$1', {const, ?VER}}], [true]}]),
+        ok
+    catch
+        error:badarg -> ok
     end.
 
 %% @doc 写入运行参数层。
@@ -214,7 +272,12 @@ pterm_defaults() ->
         D -> D
     end.
 
-%% 只移除对应 key 的缓存条目（persistent_term:put 触发全局扫描，但 set/unset 低频）
+%% 只移除对应 key 的缓存条目；先递增版本，让并发中的回填自行撤销
 invalidate(Key) ->
-    Cache = persistent_term:get(?PT_CACHE, #{}),
-    persistent_term:put(?PT_CACHE, maps:remove(Key, Cache)).
+    try
+        _ = ets:update_counter(?CACHE, ?VER, 1, {?VER, 0}),
+        true = ets:delete(?CACHE, Key),
+        ok
+    catch
+        error:badarg -> ok
+    end.

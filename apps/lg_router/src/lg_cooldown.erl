@@ -162,7 +162,8 @@ init([]) ->
                           {write_concurrency, true}]),
     lg_metrics:register_gauge(litegate_cooling_targets, <<"Upstream targets in cooldown">>,
                               fun() -> [{[], cooling_count()}] end),
-    {ok, #{}}.
+    %% 首次调度；之后由 handle_info(sweep) 自行续期（T19：此前缺少首次调度，清扫从未运行）
+    {ok, #{sweep => erlang:send_after(?SWEEP_MS, self(), sweep)}}.
 
 handle_call(_Req, _From, S) ->
     {reply, ok, S}.
@@ -172,8 +173,7 @@ handle_cast(_Msg, S) ->
 
 handle_info(sweep, S) ->
     sweep(),
-    _ = erlang:send_after(?SWEEP_MS, self(), sweep),
-    {noreply, S};
+    {noreply, S#{sweep => erlang:send_after(?SWEEP_MS, self(), sweep)}};
 handle_info(_Msg, S) ->
     {noreply, S}.
 

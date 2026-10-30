@@ -14,7 +14,7 @@
 
 -export([chat/3, stream_open/3, stream_next/1, stream_abort/1, stream_set_idle/2, error_frame/2, upstream_request/3,
          embeddings/2, count_tokens/2, live/2, stream_output_started/1, probe/2, auth_headers/4,
-         streamable/1]).
+         streamable/1, api_opts/1]).
 
 %% 供 lg_provider_stream 组合调用；不属于公共 provider API
 -export([with_unfit_retry/2, with_beta_retry/2, sent_error/2, responses_passthrough/1, responses_url/1,
@@ -27,7 +27,8 @@
                     upstream_model := binary(),
                     default_max_tokens => pos_integer() | undefined,
                     client_headers => [{binary(), binary()}],
-                    loop_guard => boolean()}.
+                    loop_guard => boolean(),
+                    idle => fun(() -> term())}.     %% 等待上游时的回调（流式写保活帧；T20 感知客户端断开）
 -type result() :: lg_stream:result().
 -export_type([format/0, target/0, result/0]).
 
@@ -56,7 +57,7 @@ chat_once(Client, Req, Target) ->
     case upstream_request(Client, Req#{<<"stream">> => false}, Target) of
         {ok, #{url := Url, headers := H, body := B, upstream := Up} = U} ->
             Timeout = lg_config:get(upstream_timeout_ms),
-            case lg_http:request(<<"POST">>, Url, H, B, Timeout, #{api => true}) of
+            case lg_http:request(<<"POST">>, Url, H, B, Timeout, api_opts(Target)) of
                 {ok, _Status, _RespH, RespBody} ->
                     respond(Client, Up, RespBody, lg_think:enabled(maps:get(credential, Target)),
                             maps:get(structured, U, undefined));
@@ -187,7 +188,7 @@ responses_native(Req, #{credential := Cred, upstream_model := Model} = Target) -
             BodyMap = extra_body(Cred, lg_unfit:apply(openai, Cred#lg_credential.id, Model,
                                                       lg_quirks:apply(openai, Cred, Model, Req#{<<"model">> => Model}), false)),
             Body = json:encode(BodyMap),
-            case lg_http:request(<<"POST">>, responses_url(Cred), H ++ Cred#lg_credential.headers, Body, Timeout, #{api => true}) of
+            case lg_http:request(<<"POST">>, responses_url(Cred), H ++ Cred#lg_credential.headers, Body, Timeout, api_opts(Target)) of
                 {ok, _, _, RespBody} ->
                     try json:decode(RespBody) of
                         J when is_map(J) -> {ok, RespBody, responses_result(J)};
@@ -319,7 +320,7 @@ passthrough(Url, Proto, Req, #{credential := Cred, upstream_model := Model} = Ta
         {ok, H} ->
             Body = json:encode(Req#{<<"model">> => Model}),
             Timeout = lg_config:get(upstream_timeout_ms),
-            case lg_http:request(<<"POST">>, Url, H ++ Cred#lg_credential.headers, Body, Timeout, #{api => true}) of
+            case lg_http:request(<<"POST">>, Url, H ++ Cred#lg_credential.headers, Body, Timeout, api_opts(Target)) of
                 {ok, _Status, _RespH, RespBody} ->
                     try json:decode(RespBody) of
                         J when is_map(J) ->
@@ -386,6 +387,12 @@ stream_abort(S) -> lg_provider_stream:stream_abort(S).
 stream_set_idle(S, F) -> lg_provider_stream:stream_set_idle(S, F).
 stream_output_started(S) -> lg_provider_stream:stream_output_started(S).
 error_frame(F, Msg) -> lg_provider_stream:error_frame(F, Msg).
+
+%% @doc 发往大模型 API 的同步请求选项（lg_http:request/6）：Target 带等待回调时等待响应头期间每 250ms 调用一次，
+%% 非流式请求借此感知客户端断开（T20）。
+-spec api_opts(target()) -> map().
+api_opts(#{idle := F}) when is_function(F, 0) -> #{api => true, idle => F, tick => 250};
+api_opts(_) -> #{api => true}.
 
 %%====================================================================
 %% 构造上游请求

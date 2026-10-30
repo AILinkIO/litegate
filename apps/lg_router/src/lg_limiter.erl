@@ -3,8 +3,9 @@
 %% - RPM / TPM：按分钟分桶的滑动窗口近似：
 %%     rate = 上一分钟计数 × (1 - 本分钟已过比例) + 本分钟计数
 %% - TPM 在请求前按估算 token 预扣，结束后 release/2 按实际用量补差
-%% - 并发：先原子 +1，超出上限立即回滚；本进程监控持有槽位的请求进程，
-%%   release/2 或进程退出时归还（请求进程崩溃不会泄漏槽位）
+%% - 并发：由本进程先监控请求进程、再原子 +1（超出上限立即回滚），占槽与监控之间没有泄漏窗口；
+%%   release/2 或进程退出时归还（请求进程崩溃不会泄漏槽位），release 只归还该进程确实持有的槽位，
+%%   重复 release 不会多减别人的计数
 %%
 %% 检查与计数之间 RPM / TPM 允许并发下的少量超出；并发数是精确的。
 -module(lg_limiter).
@@ -21,7 +22,7 @@
 
 -type reason() :: rpm | tpm | parallel.
 -opaque ticket() :: #{minute := integer(), est := non_neg_integer(),
-                      tpm := [lg_limit_scope()], slots := [lg_limit_scope()]}.
+                      tpm := [lg_limit_scope()], slots := [lg_limit_scope()], owner := pid()}.
 -export_type([ticket/0, reason/0]).
 
 %%====================================================================
@@ -40,13 +41,12 @@ acquire(Limits, EstTokens) ->
     Minute = Now div 60000,
     case check_rates(Limits, EstTokens, Now) of
         ok ->
-            case take_slots([L || #lg_limit{max_parallel = P} = L <- Limits, P =/= undefined], []) of
+            case hold_slots([L || #lg_limit{max_parallel = P} = L <- Limits, P =/= undefined]) of
                 {ok, Slots} ->
                     _ = [bump({S, rpm, Minute}, 1) || #lg_limit{scope = S, rpm = R} <- Limits, R =/= undefined],
                     Tpm = [S || #lg_limit{scope = S, tpm = T} <- Limits, T =/= undefined],
                     _ = [bump({S, tpm, Minute}, EstTokens) || S <- Tpm],
-                    Slots =/= [] andalso gen_server:cast(?MODULE, {hold, self(), Slots}),
-                    {ok, #{minute => Minute, est => EstTokens, tpm => Tpm, slots => Slots}};
+                    {ok, #{minute => Minute, est => EstTokens, tpm => Tpm, slots => Slots, owner => self()}};
                 {error, Scope} ->
                     {error, {rate_limited, parallel, Scope, 1000}}
             end;
@@ -56,12 +56,12 @@ acquire(Limits, EstTokens) ->
 
 %% @doc 请求结束：归还槽位，TPM 按实际 token 补差。
 -spec release(ticket(), non_neg_integer()) -> ok.
-release(#{minute := M, est := Est, tpm := Tpm, slots := Slots}, Actual) ->
+release(#{minute := M, est := Est, tpm := Tpm, slots := Slots, owner := Owner}, Actual) ->
     Delta = Actual - Est,
     _ = Delta =/= 0 andalso [bump({S, tpm, M}, Delta) || S <- Tpm],
     case Slots of
         [] -> ok;
-        _ -> gen_server:cast(?MODULE, {release, self(), Slots})
+        _ -> gen_server:cast(?MODULE, {release, Owner, Slots})
     end.
 
 %% @doc 请求输入 token 粗估：CJK 字符按 1 token，其余按 4 字符 1 token。
@@ -98,22 +98,34 @@ init([]) ->
     erlang:send_after(?SWEEP_MS, self(), sweep),
     {ok, #{}}.
 
+%% S：#{Pid => {MonitorRef, [Scope]}}，同一进程可多次占用（列表按出现次数计）
+%% 先 monitor 再占槽：调用方在占槽前后任意时刻退出，DOWN 都会归还
+handle_call({hold, Pid, Limits}, _From, S) ->
+    {Ref, Held} = case maps:find(Pid, S) of
+                      {ok, Entry} -> Entry;
+                      error -> {monitor(process, Pid), []}
+                  end,
+    case take_slots(Limits, []) of
+        {ok, Slots} ->
+            {reply, {ok, Slots}, S#{Pid => {Ref, Held ++ Slots}}};
+        {error, _} = Err when Held =:= [] ->
+            demonitor(Ref, [flush]),
+            {reply, Err, maps:remove(Pid, S)};
+        {error, _} = Err ->
+            {reply, Err, S}
+    end;
 handle_call(_Req, _From, S) ->
     {reply, ok, S}.
 
-%% S：#{Pid => {MonitorRef, [Scope]}}，同一进程可多次占用（列表按出现次数计）
-handle_cast({hold, Pid, Scopes}, S) ->
-    case maps:find(Pid, S) of
-        {ok, {Ref, Held}} -> {noreply, S#{Pid => {Ref, Held ++ Scopes}}};
-        error -> {noreply, S#{Pid => {monitor(process, Pid), Scopes}}}
-    end;
 handle_cast({release, Pid, Scopes}, S) ->
-    free(Scopes),
     case maps:find(Pid, S) of
         {ok, {Ref, Held}} ->
-            case Held -- Scopes of
+            %% 只归还确实持有的（重复 release 时第二次什么也不做）
+            Rest = Held -- Scopes,
+            free(Held -- Rest),
+            case Rest of
                 [] -> demonitor(Ref, [flush]), {noreply, maps:remove(Pid, S)};
-                Rest -> {noreply, S#{Pid => {Ref, Rest}}}
+                _ -> {noreply, S#{Pid => {Ref, Rest}}}
             end;
         error ->
             {noreply, S}
@@ -180,6 +192,14 @@ scan_text(<<>>, Cjk, Total) ->
 
 bump(Key, N) ->
     ets:update_counter(?RATE, Key, N, {Key, 0}).
+
+hold_slots([]) ->
+    {ok, []};
+hold_slots([#lg_limit{scope = S0} | _] = Limits) ->
+    %% 本进程忙或不在：按并发已满处理，不让请求进程崩溃
+    try gen_server:call(?MODULE, {hold, self(), Limits})
+    catch exit:_ -> {error, S0}
+    end.
 
 take_slots([], Acc) ->
     {ok, Acc};

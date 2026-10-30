@@ -150,6 +150,8 @@ model_of(Body) ->
 
 reset_upstream() ->
     lg_cooldown:clear(),
+    %% 前面用例的 429 会让目标建立出站节流 Cap，跨用例残留会把预期响应错配给其他目标
+    lg_out_rate:reset(),
     ets:insert(lg_mock_upstream, {requests, []}).
 
 %%--------------------------------------------------------------------

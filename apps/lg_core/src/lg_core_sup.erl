@@ -8,5 +8,6 @@ start_link() ->
 
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
-    Children = [#{id => lg_metrics, start => {lg_metrics, start_link, []}}],
+    Children = [#{id => lg_config_cache, start => {lg_config_cache, start_link, []}},
+                #{id => lg_metrics, start => {lg_metrics, start_link, []}}],
     {ok, {SupFlags, Children}}.

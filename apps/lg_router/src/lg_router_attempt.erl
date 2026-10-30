@@ -49,8 +49,10 @@ attempt_rounds(Plan, Client, Req, Ctx, Call, Out0, Round) ->
                 true ->
                     logger:notice("route ~s: all ~b candidates busy, retrying in ~b ms",
                                   [maps:get(route, Out), length(ThisRound), Wait]),
-                    patience_wait(Wait, maps:get(idle, Ctx, undefined)),
-                    attempt_rounds(Plan, Client, Req, Ctx, Call, Out#{rounds => Round + 1, patience_ms => Wait}, Round + 1);
+                    case client_wait(fun() -> patience_wait(Wait, maps:get(idle, Ctx, undefined)) end) of
+                        ok -> attempt_rounds(Plan, Client, Req, Ctx, Call, Out#{rounds => Round + 1, patience_ms => Wait}, Round + 1);
+                        {error, CE} -> {error, CE, Out}
+                    end;
                 false ->
                     Err
             end;
@@ -64,20 +66,36 @@ busy_failure(_) -> false.
 
 busy_kind(K) -> lists:member(K, [server, timeout, network, rate_limit]).
 
-%% 等待期间流式请求照常写保活帧（idle 回调每秒一次）；节点关停时提前结束
+%% 等待期间流式请求照常写保活帧（idle 回调每 250ms 一次，客户端断开时抛出 client_exit）；节点关停时提前结束
 patience_wait(Ms, Idle) ->
-    Step = min(Ms, 1000),
+    Step = min(Ms, 250),
     timer:sleep(Step),
-    _ = Idle =:= undefined orelse (catch Idle()),
+    idle(Idle),
     case Ms - Step of
         Left when Left > 0 -> lg_shutdown:draining() orelse patience_wait(Left, Idle), ok;
         _ -> ok
     end.
 
+%% 等待回调：client_exit 继续抛出，其余异常忽略（写保活帧失败不影响请求）
+idle(undefined) -> ok;
+idle(F) ->
+    try F() catch throw:{client_exit, _} = E -> throw(E); _:_ -> ok end,
+    ok.
+
+%% T20：等待回调在客户端断开时抛出 {client_exit, _}（排队、patience、等待上游响应头时）。
+%% 捕获后以 client_closed 错误结束：不再尝试后续候选、不计入目标健康；上游流已由 lg_http 取消，
+%% 名额由调用方照常归还，日志 499 与记账由 lg_web 完成
+client_wait(Fun) ->
+    try Fun() catch throw:{client_exit, _} -> {error, closed_error()} end.
+
+closed_error() ->
+    #{kind => client_closed, status => 499, retryable => false, retry_after_ms => undefined, upstream => undefined,
+      message => <<"Client closed the connection before the upstream replied">>}.
+
 %% 凭证有并发上限时先占名额：满了且后面还有未满的候选 → 跳过（不冷却）；否则排队等待
 attempt_plan([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out) ->
     %% T09：先检查出站速率（节流），再检查并发
-    case lg_out_rate:allow(lg_router_plan:tkey(T)) of
+    case lg_out_rate:allow(lg_router_plan:tkey(T), Cred) of
         {throttle, RetryMs} ->
             rate_throttled([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out, RetryMs);
         ok ->
@@ -102,11 +120,14 @@ attempt_plan_conc([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out) ->
                             attempt(Rest, Client, Req, Ctx, Call, Out#{attempts => maps:get(attempts, Out) ++ [Info]});
                         false ->
                             T0 = lg_time:now_ms(),
-                            Res = lg_conc:wait(CId, Max, lg_config:get(queue_wait_ms), maps:get(idle, Ctx, undefined)),
+                            Res = client_wait(fun() -> lg_conc:wait(CId, Max, lg_config:get(queue_wait_ms),
+                                                                     maps:get(idle, Ctx, undefined)) end),
                             Out1 = Out#{queued_ms => maps:get(queued_ms, Out, 0) + lg_time:now_ms() - T0},
                             case Res of
                                 ok ->
                                     attempt_held([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out1#{conc => CId});
+                                {error, CE} ->
+                                    {error, CE, (with_target(Out1, T, Cred))#{attempts => maps:get(attempts, Out1) ++ [Info]}};
                                 _ ->
                                     {error, concurrency_error(Res),
                                      (with_target(Out1, T, Cred))#{attempts => maps:get(attempts, Out1) ++ [Info]}}
@@ -134,11 +155,14 @@ rate_throttled([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out, Retry
                 queue ->
                     Idle = maps:get(idle, Ctx, undefined),
                     T0 = lg_time:now_ms(),
-                    case lg_out_rate:wait(lg_router_plan:tkey(T), RetryMs, Idle) of
+                    case client_wait(fun() -> lg_out_rate:wait(lg_router_plan:tkey(T), Cred, RetryMs, Idle) end) of
                         ok ->
                             Out1 = Out#{queued_ms => maps:get(queued_ms, Out, 0) + lg_time:now_ms() - T0},
-                            attempt_plan_conc([{RouteName, T, Cred}], Client, Req, Ctx, Call,
+                            %% 保留后续候选：该目标排队后再失败仍可回退（T17）
+                            attempt_plan_conc([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call,
                                               Out1#{attempts => maps:get(attempts, Out1) ++ [Info]});
+                        {error, #{kind := client_closed} = CE} ->
+                            {error, CE, (with_target(Out, T, Cred))#{attempts => maps:get(attempts, Out) ++ [Info]}};
                         {error, timeout} ->
                             {error, #{kind => rate_limit, status => 429, retryable => false,
                                       retry_after_ms => RetryMs, upstream => undefined,
@@ -183,7 +207,7 @@ attempt_held([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out0) ->
                  credential_name => Cred#lg_credential.name, upstream_model => maps:get(upstream_model, T)},
     lg_live:attempt_start(LiveId, LiveInfo),
     lg_out_rate:record(lg_router_plan:tkey(T)),
-    Res = Call(Client, Req, Target),
+    Res = client_wait(fun() -> Call(Client, Req, Target) end),
     lg_live:attempt_end(LiveId, LiveInfo#{ok => element(1, Res) =:= ok, duration_ms => lg_time:now_ms() - T0,
                                           kind => case Res of {error, #{kind := EK0}} -> EK0; _ -> null end}),
     Out = case Res of
@@ -197,12 +221,14 @@ attempt_held([{RouteName, T, Cred} | Rest], Client, Req, Ctx, Call, Out0) ->
     lg_metrics:inc(litegate_upstream_attempts_total,
                    [{credential, Cred#lg_credential.id}, {outcome, Outcome}]),
     Duration = lg_time:now_ms() - T0,
-    lg_health:record(lg_router_plan:tkey(T), Outcome, Duration,
-                     case Res of {error, #{message := M}} -> M; _ -> undefined end),
+    %% 客户端断开不是目标的问题，不计入健康
+    _ = Outcome =:= client_closed orelse
+        lg_health:record(lg_router_plan:tkey(T), Outcome, Duration,
+                         case Res of {error, #{message := M}} -> M; _ -> undefined end),
     %% 套餐凭证：用量变化后刷新额度；额度用尽 / 余额不足时立即重新查询，被限流时尽快重新查询
     case Outcome of
         QK when QK =:= quota; QK =:= credit -> lg_plan:exhausted(Cred#lg_credential.id),
-                                               gen_server:cast(lg_balance, {refresh, [Cred#lg_credential.id]});
+                                               lg_balance:exhausted(Cred#lg_credential.id);
         rate_limit -> lg_plan:quota_error(Cred#lg_credential.id),
                       lg_out_rate:on_rate_limit(lg_router_plan:tkey(T),
                           case Res of {error, #{retry_after_ms := RA}} when is_integer(RA), RA > 0 -> RA; _ -> undefined end);

@@ -1,7 +1,9 @@
 %% @doc 数据保留清理：删除过期的日志 / 对话 / 索引与小时用量汇总，然后按需 merge 回收空间。
 %%
 %% 启动后延迟 FIRST_RUN_MS 首次运行，之后每 24 小时一次；run/0 可手动触发（同一时间只跑一个）。
-%% 删除交给 lg_store_writer（单写者），merge 在本进程执行（bitcask 的 merge 锁不阻塞写者）。
+%% 删除交给 lg_store_writer（单写者），每次调用 ≤ BATCH 个键（跨索引前缀累积），不长时间独占写者；
+%% merge 在本进程执行（bitcask 的 merge 锁不阻塞写者）。
+%% 派生数据回填（lg_store_migrate）在启动后 janitor_migrate_ms（默认 10s）先跑一次，每次清理前再跑一次。
 %% 最近一次结果记在 lg_meta 的 store_janitor。
 -module(lg_store_janitor).
 -behaviour(gen_server).
@@ -33,6 +35,7 @@ status() ->
 init([]) ->
     First = application:get_env(lg_store, janitor_first_run_ms, 5 * 60000),
     erlang:send_after(First, self(), tick),
+    erlang:send_after(application:get_env(lg_store, janitor_migrate_ms, 10000), self(), migrate),
     {ok, #{}}.
 
 handle_call(run, _From, S) ->
@@ -45,6 +48,9 @@ handle_info(tick, S) ->
     _ = cleanup(),
     erlang:send_after(?DAY_MS, self(), tick),
     {noreply, S};
+handle_info(migrate, S) ->
+    _ = migrate(),
+    {noreply, S};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
@@ -52,7 +58,15 @@ handle_info(_Msg, S) ->
 %% 清理
 %%====================================================================
 
+migrate() ->
+    try lg_store_migrate:run()
+    catch C:R:St ->
+            logger:error("store migration crashed: ~p:~p ~p", [C, R, St]),
+            #{error => crashed}
+    end.
+
 cleanup() ->
+    Migration = migrate(),
     Start = lg_time:now_ms(),
     LogDays = lg_config:get(log_retention_days),
     UsageDays = lg_config:get(usage_retention_days),
@@ -62,7 +76,7 @@ cleanup() ->
                      Cutoff = Start - N * ?DAY_MS,
                      (purge_logs(Cutoff, Stats0))#{responses => purge_expired(responses, created_at, Cutoff),
                                                   sessions => purge_sessions(Cutoff),
-                                                  alerts => purge_expired(alerts, created_at, Cutoff)};
+                                                  alerts => purge_alerts(Cutoff)};
                  _ -> Stats0
              end,
     Stats2 = case UsageDays of
@@ -71,7 +85,7 @@ cleanup() ->
              end,
     Stats3 = Stats2#{cache => purge_expired(cache, expires_at, Start)},
     Merged = [C || C <- [logs, msgs, idx, usage, search, cache, responses, alerts, sessions], merge(C)],
-    Result = Stats3#{merged => Merged, at => Start, duration_ms => lg_time:now_ms() - Start,
+    Result = Stats3#{merged => Merged, at => Start, duration_ms => lg_time:now_ms() - Start, migration => Migration,
                      log_retention_days => LogDays, usage_retention_days => UsageDays},
     ok = lg_db:write(#lg_meta{key = store_janitor, value = Result}),
     maps:get(logs, Result) + maps:get(usage, Result) > 0 andalso
@@ -82,74 +96,118 @@ cleanup() ->
 purge_logs(Cutoff, Stats) ->
     {Lo, _} = lg_store_keys:log_bounds(0, Cutoff),
     N = delete_range(logs, Lo, undefined, [logs, msgs, search]),
-    Stats#{logs => N, index => purge_index(Lo, <<>>, 0)}.
+    Stats#{logs => N, index => purge_index(Lo)}.
 
-%% 索引按维度前缀逐段处理：每个前缀只删其过期段，然后跳到下一个前缀
-purge_index(ExpiredLo, Cursor, Acc) ->
+%% 索引按维度前缀逐段处理：每个前缀只删其过期段，然后跳到下一个前缀；待删键跨前缀累积成批
+purge_index(ExpiredLo) ->
+    purge_index(ExpiredLo, <<>>, batch([idx])).
+
+purge_index(ExpiredLo, Cursor, B) ->
     case first_key(idx, Cursor) of
         none ->
-            Acc;
+            done(B);
         Key ->
             Prefix = binary:part(Key, 0, byte_size(Key) - 12),
             End = <<Prefix/binary, (binary:copy(<<16#FF>>, 13))/binary>>,
-            N = delete_range(idx, <<Prefix/binary, ExpiredLo/binary>>, End, [idx]),
-            purge_index(ExpiredLo, End, Acc + N)
+            purge_index(ExpiredLo, End, scan_into(idx, <<Prefix/binary, ExpiredLo/binary>>, End, B))
     end.
 
 %% 按值中的时间字段清理（响应缓存按 expires_at 过期；Responses 会话按 created_at 保留期）。
-%% 这类数据量不大，整表扫描。
+%% 只扫过期索引中早于 Cutoff 的段；主记录仍在且时间字段确已过期才删（同一键可能已重写成更晚的过期时间），
+%% 索引键一律删除。未建过期索引的旧条目由 lg_store_migrate 回填索引后照此清理。
 purge_expired(Cask, Field, Cutoff) ->
     H = persistent_term:get({lg_store, Cask}),
-    Keep = case Field of
-               expires_at -> fun(T) -> T > Cutoff end;
-               created_at -> fun(T) -> T >= Cutoff end
-           end,
-    Fun = fun(K, V, _Ts, _Ord, Acc) ->
-                  case binary_to_term(V) of
-                      #{Field := T} when is_integer(T) ->
-                          case Keep(T) of true -> Acc; false -> [K | Acc] end;
-                      _ -> [K | Acc]
-                  end
+    Expired = case Field of
+                  expires_at -> fun(T) -> T =< Cutoff end;
+                  created_at -> fun(T) -> T < Cutoff end
+              end,
+    Hi = case Field of
+             expires_at -> Cutoff + 1;
+             created_at -> Cutoff
+         end,
+    Fun = fun(<<0, T:64, Key/binary>> = K, V, _Ts, _Ord, {B, N}) ->
+                  case V =:= lg_store_keys:expiry_val(Field, T) of
+                      false ->
+                          {B, N};  %% 主键恰好落进索引范围
+                      true ->
+                          Main = case bitcask:get(H, Key) of
+                                     {ok, MV} ->
+                                         case binary_to_term(MV) of
+                                             #{Field := T2} when is_integer(T2) -> Expired(T2);
+                                             _ -> true
+                                         end;
+                                     _ ->
+                                         false
+                                 end,
+                          case Main of
+                              true -> {add(Key, add(K, B)), N + 1};
+                              false -> {add(K, B), N}
+                          end
+                  end;
+             (_K, _V, _Ts, _Ord, Acc) ->
+                  Acc
           end,
-    case bitcask:range_fold(H, {undefined, undefined}, [], Fun, []) of
+    case bitcask:range_fold(H, lg_store_keys:expiry_bounds(Hi), [], Fun, {batch([Cask]), 0}) of
         {error, R} -> logger:error("store cleanup ~p scan failed: ~p", [Cask, R]), 0;
-        Keys -> ok = lg_store_writer:delete(Cask, Keys), length(Keys)
+        {B, N} -> done(B), N
     end.
+
+%% 告警键 <<Ts:64, Id>> 按时间有序：早于 Cutoff 的是键空间头部
+purge_alerts(Cutoff) ->
+    delete_range(alerts, undefined, <<Cutoff:64>>, [alerts]).
 
 %% 会话按最近活动过期：最近活动键时间倒序，早于 Cutoff 的在尾部；同时删汇总
 purge_sessions(Cutoff) ->
     H = persistent_term:get({lg_store, sessions}),
     {_, Lo} = lg_store_keys:recent_bounds(Cutoff, Cutoff + 1),
-    Fun = fun(K, _V, _Ts, _Ord, Acc) -> [K | Acc] end,
-    case bitcask:range_fold(H, {Lo, <<$b>>}, [], Fun, []) of
+    Fun = fun(K, _V, _Ts, _Ord, {B, N}) ->
+                  {add(lg_store_keys:session_key(lg_store_keys:recent_sid(K)), add(K, B)), N + 1}
+          end,
+    case bitcask:range_fold(H, {Lo, <<$b>>}, [], Fun, {batch([sessions]), 0}) of
         {error, R} ->
             logger:error("store cleanup sessions scan failed: ~p", [R]),
             0;
-        Keys ->
-            ok = lg_store_writer:delete(sessions, Keys ++ [lg_store_keys:session_key(lg_store_keys:recent_sid(K)) || K <- Keys]),
-            length(Keys)
+        {B, N} ->
+            done(B),
+            N
     end.
 
+%% 维度行之外另删同一时段的派生行（总量 / 费用分解，见 lg_store_keys）；统计只计维度行
 purge_usage(Cutoff, Stats) ->
-    Stats#{usage => delete_range(usage, <<0:32>>, <<(lg_store_keys:hour(Cutoff)):32>>, [usage])}.
+    CutHour = lg_store_keys:hour(Cutoff),
+    N = delete_range(usage, <<0:32>>, <<CutHour:32>>, [usage]),
+    _ = [delete_range(usage, <<16#FF, Kind, 0:32>>, <<16#FF, Kind, CutHour:32>>, [usage]) || Kind <- [0, 1]],
+    Stats#{usage => N}.
 
 %% 扫描 Scan 中 [Lo, Hi) 的键，分批从 Casks 删除
 delete_range(Scan, Lo, Hi, Casks) ->
+    B = scan_into(Scan, Lo, Hi, batch(Casks)),
+    done(B).
+
+scan_into(Scan, Lo, Hi, B0) ->
     H = persistent_term:get({lg_store, Scan}),
-    Fun = fun(K, _V, _Ts, _Ord, {Batch, N}) when length(Batch) >= ?BATCH ->
-                  remove(Casks, Batch),
-                  {[K], N + 1};
-             (K, _V, _Ts, _Ord, {Batch, N}) ->
-                  {[K | Batch], N + 1}
-          end,
-    case bitcask:range_fold(H, {Lo, Hi}, [], Fun, {[], 0}) of
+    case bitcask:range_fold(H, {Lo, Hi}, [], fun(K, _V, _Ts, _Ord, B) -> add(K, B) end, B0) of
         {error, R} ->
             logger:error("store cleanup scan ~p failed: ~p", [Scan, R]),
-            0;
-        {Rest, N} ->
-            remove(Casks, Rest),
-            N
+            B0;
+        B ->
+            B
     end.
+
+%% 删除批：{Casks, 待删键, 批内键数, 累计键数}；满 BATCH 即交给写者（每个 cask 一次调用）
+batch(Casks) ->
+    {Casks, [], 0, 0}.
+
+add(K, {Casks, Keys, N, Total}) when N + 1 >= ?BATCH ->
+    remove(Casks, [K | Keys]),
+    {Casks, [], 0, Total + 1};
+add(K, {Casks, Keys, N, Total}) ->
+    {Casks, [K | Keys], N + 1, Total + 1}.
+
+%% 删掉剩余的键，返回累计键数
+done({Casks, Keys, _, Total}) ->
+    remove(Casks, Keys),
+    Total.
 
 remove(Casks, Keys) ->
     [ok = lg_store_writer:delete(C, Keys) || C <- Casks],

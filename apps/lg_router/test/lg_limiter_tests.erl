@@ -18,6 +18,8 @@ limiter_test_() ->
       ?_test(tpm_and_adjust()),
       ?_test(parallel_and_crash()),
       ?_test(all_or_nothing()),
+      ?_test(release_ownership()),
+      ?_test(killed_after_take()),
       ?_test(estimate())]}.
 
 lim(Scope, Fields) ->
@@ -72,6 +74,36 @@ all_or_nothing() ->
     ?assertMatch({error, {rate_limited, parallel, {route, <<"b">>}, _}}, lg_limiter:acquire([A, B], 0)),
     ?assertEqual(1, lg_limiter:parallel({key, <<"a">>})),
     ?assertEqual(Rpm0, lg_limiter:rate({key, <<"a">>}, rpm)).
+
+%% 重复 release 只归还一次，不会减掉别的请求占着的槽位；release 可在别的进程里调用（按 ticket 归属）
+release_ownership() ->
+    S = {key, <<"own">>},
+    L = lim(S, #{max_parallel => 3}),
+    {ok, T1} = lg_limiter:acquire([L], 0),
+    Parent = self(),
+    Holder = spawn(fun() -> {ok, T} = lg_limiter:acquire([L], 0), Parent ! {held, T}, receive stop -> ok end end),
+    T2 = receive {held, T} -> T end,
+    ?assertEqual(2, lg_limiter:parallel(S)),
+    ok = lg_limiter:release(T1, 0),
+    ok = lg_limiter:release(T1, 0),
+    ok = lg_limiter:release(T1, 0),
+    _ = sys:get_state(lg_limiter),
+    ?assertEqual(1, lg_limiter:parallel(S)),
+    %% 别的进程持有的 ticket 在本进程归还
+    ok = lg_limiter:release(T2, 0),
+    _ = sys:get_state(lg_limiter),
+    ?assertEqual(0, lg_limiter:parallel(S)),
+    exit(Holder, kill).
+
+%% 占槽前后任意时刻被 kill：槽位都被回收
+killed_after_take() ->
+    S = {key, <<"kill">>},
+    L = lim(S, #{max_parallel => 1000}),
+    Pids = [spawn(fun() -> {ok, _} = lg_limiter:acquire([L], 0), exit(self(), kill) end) || _ <- lists:seq(1, 100)]
+        ++ [begin P = spawn(fun() -> {ok, _} = lg_limiter:acquire([L], 0), receive after infinity -> ok end end),
+                  exit(P, kill), P end || _ <- lists:seq(1, 200)],
+    ?assertEqual(300, length(Pids)),
+    wait_until(fun() -> lg_limiter:parallel(S) =:= 0 andalso sys:get_state(lg_limiter) =:= #{} end).
 
 estimate() ->
     ?assertEqual(0, lg_limiter:estimate_tokens(#{})),

@@ -20,6 +20,13 @@ services:
         GIT_SHA: ${GIT_SHA:-dev}
     user: "${LITEGATE_UID:-1000}:${LITEGATE_GID:-1000}"
     restart: unless-stopped
+    # 优雅关停：排空在途请求（shutdown_drain_ms 默认 20s）+ 关闭监听 + bitcask 最终 flush，默认 10s 不够
+    stop_grace_period: 60s
+    # 每请求占 2 个 socket（客户端 + 上游），默认 soft 1024 几百并发即 EMFILE；与 vm.args +Q 对齐
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "${LITEGATE_HTTP_PORT:-4000}:4000"
     volumes:

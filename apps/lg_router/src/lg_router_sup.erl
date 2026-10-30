@@ -8,7 +8,8 @@ start_link() ->
 
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
-    Children = [#{id => lg_alert, start => {lg_alert, start_link, []}},
+    Children = [#{id => lg_route_cache, start => {lg_route_cache, start_link, []}},
+                #{id => lg_alert, start => {lg_alert, start_link, []}},
                 #{id => lg_login_guard, start => {lg_login_guard, start_link, []}},
                 #{id => lg_backup, start => {lg_backup, start_link, []}},
                 #{id => lg_cooldown, start => {lg_cooldown, start_link, []}},

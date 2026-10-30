@@ -70,7 +70,7 @@ speech(Req, #{credential := #lg_credential{protocol = openai, base_url = Base} =
             case media_api(Cred) of
                 openai ->
                     Body = json:encode(Req#{<<"model">> => Model}),
-                    case lg_http:request(<<"POST">>, url(Base, <<"/audio/speech">>), H, Body, Timeout, #{api => true}) of
+                    case lg_http:request(<<"POST">>, url(Base, <<"/audio/speech">>), H, Body, Timeout, lg_provider:api_opts(Target)) of
                         {ok, _, RespH, Audio} ->
                             CT = case lists:keyfind(<<"content-type">>, 1, RespH) of
                                      {_, V} -> V;
@@ -97,7 +97,7 @@ speech(Req, #{credential := #lg_credential{protocol = openai, base_url = Base} =
                     Body = json:encode(#{<<"model">> => Model, <<"text">> => Input, <<"stream">> => false,
                                          <<"voice_setting">> => #{<<"voice_id">> => Voice, <<"speed">> => Speed},
                                          <<"audio_setting">> => #{<<"format">> => MFormat}}),
-                    case lg_http:request(<<"POST">>, url(Base, <<"/t2a_v2">>), H, Body, Timeout, #{api => true}) of
+                    case lg_http:request(<<"POST">>, url(Base, <<"/t2a_v2">>), H, Body, Timeout, lg_provider:api_opts(Target)) of
                         {ok, _, _, RespBody} ->
                             try json:decode(RespBody) of
                                 #{<<"base_resp">> := #{<<"status_code">> := C} = BR} when C =/= 0 ->
@@ -165,7 +165,7 @@ systemone(Req, #{credential := #lg_credential{protocol = openai, base_url = Base
             Body = json:encode(Req#{<<"model">> => Model}),
             Timeout = lg_config:get(upstream_timeout_ms),
             case lg_http:request(<<"POST">>, url(Base, <<"/systemone">>), H ++ Cred#lg_credential.headers,
-                                 Body, Timeout, #{api => true}) of
+                                 Body, Timeout, lg_provider:api_opts(Target)) of
                 {ok, _, _, RespBody} ->
                     try json:decode(RespBody) of
                         #{<<"answers">> := A} = J when is_map(A) ->
@@ -212,7 +212,7 @@ post(Url, Body0, #{credential := Cred, upstream_model := Model} = Target, Conver
         {ok, H} ->
             Body = json:encode(Body0#{<<"model">> => Model}),
             Timeout = lg_config:get(upstream_timeout_ms),
-            case lg_http:request(<<"POST">>, Url, H ++ Cred#lg_credential.headers, Body, Timeout, #{api => true}) of
+            case lg_http:request(<<"POST">>, Url, H ++ Cred#lg_credential.headers, Body, Timeout, lg_provider:api_opts(Target)) of
                 {ok, _, _, RespBody} ->
                     try json:decode(RespBody) of
                         J when is_map(J) ->

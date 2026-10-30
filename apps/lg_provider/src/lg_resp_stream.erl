@@ -49,7 +49,7 @@ feed(#{data := <<"[DONE]">>}, #rs{mode = passthrough} = S) ->
 feed(#{raw := Raw, data := Data}, #rs{mode = passthrough} = S) ->
     S1 = try json:decode(Data) of
              #{<<"type">> := <<"response.output_text.delta">>, <<"delta">> := D} ->
-                 S#rs{text = [S#rs.text, D]};
+                 S#rs{text = [S#rs.text, copy(D)]};
              #{<<"type">> := T, <<"response">> := R}
                when T =:= <<"response.completed">>; T =:= <<"response.incomplete">> ->
                  S#rs{final = R, usage = lg_usage:from_responses(maps:get(<<"usage">>, R, null)),
@@ -129,7 +129,7 @@ reasoning_delta(T, S0) when is_binary(T), T =/= <<>> ->
     {F, S2} = event(<<"response.reasoning_text.delta">>,
                     #{<<"item_id">> => ItemId, <<"output_index">> => Idx, <<"content_index">> => 0,
                       <<"delta">> => T}, S1),
-    {Open ++ [F], S2#rs{open = {reasoning, ItemId, Idx, [Acc, T]}}};
+    {Open ++ [F], S2#rs{open = {reasoning, ItemId, Idx, [Acc, binary:copy(T)]}}};
 reasoning_delta(_, S) ->
     {[], S}.
 
@@ -150,7 +150,8 @@ text_delta(T, S0) when is_binary(T), T =/= <<>> ->
     {F, S2} = event(<<"response.output_text.delta">>,
                     #{<<"item_id">> => ItemId, <<"output_index">> => Idx, <<"content_index">> => 0,
                       <<"delta">> => T}, S1),
-    {Open ++ [F], S2#rs{open = {text, ItemId, Idx, [Acc, T]}, text = [S2#rs.text, T]}};
+    T1 = binary:copy(T),
+    {Open ++ [F], S2#rs{open = {text, ItemId, Idx, [Acc, T1]}, text = [S2#rs.text, T1]}};
 text_delta(_, S) ->
     {[], S}.
 
@@ -253,3 +254,7 @@ event(Type, Payload, #rs{seq = N} = S) ->
 
 list(L) when is_list(L) -> L;
 list(_) -> [].
+
+%% 累积的增量拷贝出来：json:decode 返回的字符串是输入的 sub-binary，直接累积会钉住整块上游数据
+copy(B) when is_binary(B) -> binary:copy(B);
+copy(X) -> X.

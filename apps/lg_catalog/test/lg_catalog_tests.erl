@@ -22,7 +22,9 @@ catalog_test_() ->
       ?_test(overlay_survives_sync()),
       ?_test(pricing_fallback()),
       ?_test(protocol()),
-      ?_test(bad_input())]}.
+      ?_test(bad_input()),
+      ?_test(sync_aborts_mass_removal()),
+      {timeout, 30, ?_test(interval_reread())}]}.
 
 fixture() ->
     #{<<"anthropic">> =>
@@ -132,3 +134,71 @@ bad_input() ->
     ?assertMatch({error, {bad_json, _}}, lg_catalog_sync:import(<<"{not json">>)),
     ?assertMatch({error, {empty_catalog, 0}}, import(#{})),
     ?assertMatch(#{status := error}, lg_catalog_sync:status()).
+
+%% 本地 HTTP 服务：每个连接回同一个 JSON 体，每服务一次给测试进程发 served
+serve(Data) ->
+    Body = iolist_to_binary(json:encode(Data)),
+    Parent = self(),
+    {ok, L} = gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}, {ip, {127, 0, 0, 1}}]),
+    {ok, Port} = inet:port(L),
+    _ = spawn_link(fun() -> accept_loop(L, Body, Parent) end),
+    iolist_to_binary(["http://127.0.0.1:", integer_to_list(Port), "/api.json"]).
+
+accept_loop(L, Body, Parent) ->
+    case gen_tcp:accept(L) of
+        {ok, S} ->
+            _ = recv_head(S, <<>>),
+            _ = gen_tcp:send(S, ["HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: ",
+                                 integer_to_list(byte_size(Body)), "\r\n\r\n", Body]),
+            _ = gen_tcp:close(S),
+            Parent ! served,
+            accept_loop(L, Body, Parent);
+        _ ->
+            ok
+    end.
+
+recv_head(S, Acc) ->
+    case binary:match(Acc, <<"\r\n\r\n">>) of
+        nomatch ->
+            case gen_tcp:recv(S, 0, 5000) of
+                {ok, D} -> recv_head(S, <<Acc/binary, D/binary>>);
+                E -> E
+            end;
+        _ -> ok
+    end.
+
+big(N) ->
+    #{<<"big">> => #{<<"name">> => <<"Big">>,
+                     <<"models">> => maps:from_list([{<<"m", (integer_to_binary(I))/binary>>, #{<<"name">> => <<"M">>}}
+                                                     || I <- lists:seq(1, N)])}}.
+
+%% T33：拉取的同步要删除现有 L0 模型 30% 以上时中止（现有目录保留、记为失败）；手动导入不受限
+sync_aborts_mass_removal() ->
+    {ok, _} = import(big(20)),
+    ?assertMatch({error, {too_many_removals, #{removed_models := 18, existing_models := 20}}},
+                 lg_catalog_sync:sync(serve(big(2)))),
+    ?assertEqual(20, length(lg_catalog:models())),
+    ?assertMatch(#{status := error, error := <<"{too_many_removals", _/binary>>}, lg_catalog_sync:status()),
+    %% 删除 25%：照常同步
+    ?assertMatch({ok, #{removed_models := 5}}, lg_catalog_sync:sync(serve(big(15)))),
+    ?assertEqual(15, length(lg_catalog:models())),
+    %% 手动导入是明确意图：照常替换
+    ?assertMatch({ok, #{removed_models := 14}}, import(big(1))).
+
+%% T33：每次调度重读 catalog_sync_interval_ms — 运行时从 0 改为 N 后按新间隔定时同步，改回 0 后停止
+interval_reread() ->
+    ok = lg_config:set(catalog_url, serve(big(3))),
+    ok = lg_config:set(catalog_sync_interval_ms, 100),
+    %% 关闭期间每分钟检查一次配置；这里直接触发这次检查
+    lg_catalog_sync ! check,
+    receive served -> ok after 5000 -> error(no_periodic_sync) end,
+    receive served -> ok after 5000 -> error(no_second_sync) end,
+    ?assertMatch(#{status := ok, source := <<"http://127.0.0.1:", _/binary>>}, lg_catalog_sync:status()),
+    ?assertEqual(3, length(lg_catalog:models())),
+    ok = lg_config:set(catalog_sync_interval_ms, 0),
+    %% 已排上的一轮之后不再同步
+    receive served -> ok after 500 -> ok end,
+    _ = sys:get_state(lg_catalog_sync),
+    receive served -> error(still_syncing) after 500 -> ok end,
+    ok = lg_config:unset(catalog_sync_interval_ms),
+    ok = lg_config:unset(catalog_url).

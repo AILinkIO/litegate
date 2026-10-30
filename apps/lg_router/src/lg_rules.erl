@@ -12,6 +12,9 @@
 %% intent_engine = systemone 时先问决策模型路由 decision_route（System One，问法 decision_style 见 lg_decision），
 %% 失败或超时（decision_timeout_ms）再问 classifier 路由。
 %% 判断结果按 {消息, 意图列表} 缓存 10 分钟；超时（intent_timeout_ms）或失败时本轮不按意图命中，不影响请求。
+%% 相同缓存键的并发判断合并为一次（其余请求等它的结果，最多等判断超时）。
+%% 判断者（classifier / decision_route 路由）连续失败 3 次后熔断 30 秒：期间不调用、本轮不按意图命中
+%% （decision_route 熔断时直接改问 classifier），计数 litegate_classifier_skipped_total；到期后放行一个试探请求。
 -module(lg_rules).
 
 -export([valid_rules/1, valid_classifier/1, decide/4, matches/4, parse_answer/2, prompt/2]).
@@ -21,6 +24,9 @@
 -define(MAX_RULES, 16).
 -define(INTENT_TTL_MS, 600000).
 -define(MAX_TEXT, 4096).
+-define(BREAKER_FAILS, 3).
+-define(AWAIT_STEP_MS, 20).
+-define(CIRCUIT_OPEN, <<"classifier circuit open">>).
 
 %%====================================================================
 %% 校验
@@ -316,22 +322,28 @@ ask_systemone({Route, Style}, Classifier, Intents, Req, Ctx) ->
         {ok, Answer} ->
             #{answer => Answer, ms => 0, cached => true, classifier => Route};
         miss ->
-            T0 = lg_time:now_ms(),
-            Res = case lg_router:judge_systemone(Route, lg_decision:request(Style, Intents, Text), Ctx,
-                                                 lg_config:get(decision_timeout_ms)) of
-                      {ok, Body} -> lg_decision:parse(Style, Intents, Body, lg_config:get(decision_min_prob));
-                      {error, _} = E -> E
-                  end,
-            case Res of
-                {ok, Answer, Reply} ->
-                    lg_affinity:intent_cache(CacheKey, Answer, ?INTENT_TTL_MS),
-                    #{answer => Answer, ms => lg_time:now_ms() - T0, reply => Reply, classifier => Route};
-                {error, Why} when Classifier =:= undefined ->
-                    #{answer => 0, ms => lg_time:now_ms() - T0, error => Why, classifier => Route};
-                {error, Why} ->
-                    R = ask_llm(Classifier, Intents, Text, Ctx),
-                    R#{local_error => Why, local_by => Route, ms => lg_time:now_ms() - T0}
-            end
+            Timeout = lg_config:get(decision_timeout_ms)
+                + case Classifier of undefined -> 0; _ -> lg_config:get(intent_timeout_ms) end,
+            shared(CacheKey, Route, Timeout,
+                   fun() -> ask_systemone_now(Route, Style, Classifier, Intents, Text, CacheKey, Ctx) end)
+    end.
+
+ask_systemone_now(Route, Style, Classifier, Intents, Text, CacheKey, Ctx) ->
+    T0 = lg_time:now_ms(),
+    Res = case guarded(Route, fun() -> lg_router:judge_systemone(Route, lg_decision:request(Style, Intents, Text), Ctx,
+                                                                 lg_config:get(decision_timeout_ms)) end) of
+              {ok, Body} -> lg_decision:parse(Style, Intents, Body, lg_config:get(decision_min_prob));
+              {error, _} = E -> E
+          end,
+    case Res of
+        {ok, Answer, Reply} ->
+            lg_affinity:intent_cache(CacheKey, Answer, ?INTENT_TTL_MS),
+            #{answer => Answer, ms => lg_time:now_ms() - T0, reply => Reply, classifier => Route};
+        {error, Why} when Classifier =:= undefined ->
+            #{answer => 0, ms => lg_time:now_ms() - T0, error => Why, classifier => Route};
+        {error, Why} ->
+            R = ask_llm(Classifier, Intents, Text, Ctx),
+            R#{local_error => Why, local_by => Route, ms => lg_time:now_ms() - T0}
     end.
 
 ask_route(_Engine, Classifier, Intents, Req, Ctx) ->
@@ -341,17 +353,21 @@ ask_route(_Engine, Classifier, Intents, Req, Ctx) ->
         {ok, Answer} ->
             #{answer => Answer, ms => 0, cached => true, classifier => Classifier};
         miss ->
-            R = ask_llm(Classifier, Intents, Text, Ctx),
-            case R of
-                #{error := _} -> ok;
-                #{answer := Answer} -> lg_affinity:intent_cache(CacheKey, Answer, ?INTENT_TTL_MS)
-            end,
-            R
+            shared(CacheKey, Classifier, lg_config:get(intent_timeout_ms),
+                   fun() ->
+                           R = ask_llm(Classifier, Intents, Text, Ctx),
+                           case R of
+                               #{error := _} -> ok;
+                               #{answer := Answer} -> lg_affinity:intent_cache(CacheKey, Answer, ?INTENT_TTL_MS)
+                           end,
+                           R
+                   end)
     end.
 
 ask_llm(Classifier, Intents, Text, Ctx) ->
     T0 = lg_time:now_ms(),
-    Res = lg_router:classify(Classifier, prompt(Intents, Text), Ctx, lg_config:get(intent_timeout_ms)),
+    Res = guarded(Classifier, fun() -> lg_router:classify(Classifier, prompt(Intents, Text), Ctx,
+                                                          lg_config:get(intent_timeout_ms)) end),
     Ms = lg_time:now_ms() - T0,
     case Res of
         {ok, Reply} ->
@@ -359,6 +375,54 @@ ask_llm(Classifier, Intents, Text, Ctx) ->
               classifier => Classifier};
         {error, Why} ->
             #{answer => 0, ms => Ms, error => Why, classifier => Classifier}
+    end.
+
+%% 相同缓存键的并发判断只问一次：第一个请求去问，其余等它的结果（带 shared，ms 为等待时长）。
+%% 最多等 Timeout（判断本身的超时）；判断者中途退出或等不到时本轮不按意图命中。
+shared(CacheKey, Classifier, Timeout, Ask) ->
+    case lg_affinity:intent_claim(CacheKey, Timeout + 1000) of
+        claimed ->
+            try Ask() of
+                R -> lg_affinity:intent_done(CacheKey, R), R
+            catch
+                C:E:St -> lg_affinity:intent_release(CacheKey), erlang:raise(C, E, St)
+            end;
+        wait ->
+            T0 = lg_time:now_ms(),
+            await(CacheKey, Classifier, T0, T0 + Timeout)
+    end.
+
+await(CacheKey, Classifier, T0, Deadline) ->
+    Now = lg_time:now_ms(),
+    case lg_affinity:intent_flight(CacheKey) of
+        {done, R} ->
+            R#{ms => Now - T0, shared => true};
+        running when Now < Deadline ->
+            timer:sleep(?AWAIT_STEP_MS),
+            await(CacheKey, Classifier, T0, Deadline);
+        running ->
+            #{answer => 0, ms => Now - T0, error => <<"timeout">>, shared => true, classifier => Classifier};
+        none ->
+            %% 判断者已退出：结果可能已写入缓存
+            case lg_affinity:intent_cached(CacheKey) of
+                {ok, Answer} -> #{answer => Answer, ms => Now - T0, cached => true, classifier => Classifier};
+                miss -> #{answer => 0, ms => Now - T0, error => <<"classifier gone">>, shared => true,
+                          classifier => Classifier}
+            end
+    end.
+
+%% 经熔断调用判断者 Name：打开期间不调用，直接返回 {error, ?CIRCUIT_OPEN} 并计数。
+%% 打开时长测试可用应用环境 lg_router classifier_open_ms 缩短。
+guarded(Name, Call) ->
+    OpenMs = application:get_env(lg_router, classifier_open_ms, 30000),
+    case lg_affinity:breaker_check(Name, ?BREAKER_FAILS, OpenMs) of
+        open ->
+            lg_metrics:inc(litegate_classifier_skipped_total, [{classifier, Name}]),
+            {error, ?CIRCUIT_OPEN};
+        _ ->
+            Res = Call(),
+            lg_affinity:breaker_result(Name, case Res of {ok, _} -> ok; _ -> error end, ?BREAKER_FAILS, OpenMs),
+            Res
     end.
 
 trim(B) ->

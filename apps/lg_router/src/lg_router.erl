@@ -30,7 +30,7 @@
                  prefer => {binary(), binary()},      %% 优先尝试的 {凭证, 上游模型}
                  session => binary(),                  %% 会话标识（lg_session）
                  new_turn => boolean(),                %% 对话请求：是否开始新的一轮
-                 idle => fun(() -> term()),            %% 流式：等待上游 / 排队时的回调（写保活帧）
+                 idle => fun(() -> term()),            %% 等待上游 / 排队时的回调（流式写保活帧；客户端断开时抛出 client_exit）
                  hold_started => non_neg_integer(),    %% 流式：请求开始时刻（与 stream_hold_max_ms 配合设开流上限）
                  tags => [binary()]}.                 %% 请求标签（lg_tags 已规范化）
 -type outcome() :: #{route := binary(),
@@ -295,22 +295,30 @@ classify(Name, #{<<"system">> := Sys, <<"user">> := User}, Ctx, Timeout) ->
 judge_systemone(Name, Body, Ctx, Timeout) ->
     judge(systemone, Name, Body#{<<"model">> => Name}, Ctx, Timeout).
 
+-define(JUDGE_GRACE_MS, 60000).
+
+%% 超时后不杀判断进程：调用方不再等（结果经别名投递，失效后到达的直接丢弃），判断进程跑完照常记日志、
+%% 计入花费；跑过 ?JUDGE_GRACE_MS 仍未结束才强制结束（此时花费无从得知）。
 judge(Kind, Name, Req, #{key := Key}, Timeout) ->
     case lg_routes:get(Name) of
         {ok, #lg_route{enabled = true} = R} ->
-            Parent = self(),
-            Ref = make_ref(),
-            {Pid, MRef} = spawn_monitor(fun() -> Parent ! {Ref, classify_run(Kind, R, Req, Key)} end),
+            Alias = erlang:alias(),
+            {Pid, MRef} = spawn_monitor(fun() -> Alias ! {Alias, classify_run(Kind, R, Req, Key)} end),
             receive
-                {Ref, Res} ->
+                {Alias, Res} ->
+                    erlang:unalias(Alias),
                     erlang:demonitor(MRef, [flush]),
                     Res;
                 {'DOWN', MRef, process, Pid, _} ->
+                    erlang:unalias(Alias),
                     {error, <<"classifier crashed">>}
             after Timeout ->
-                exit(Pid, kill),
+                erlang:unalias(Alias),
                 erlang:demonitor(MRef, [flush]),
-                receive {Ref, _} -> ok after 0 -> ok end,
+                receive {Alias, _} -> ok after 0 -> ok end,
+                _ = timer:kill_after(?JUDGE_GRACE_MS, Pid),
+                logger:notice("intent judge via ~ts timed out after ~bms; left running for logging and accounting",
+                              [Name, Timeout]),
                 {error, <<"timeout">>}
             end;
         _ ->

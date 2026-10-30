@@ -74,10 +74,12 @@ route(<<"GET">>, [<<"openapi.json">>], Req) ->
 route(Method, Path, Req) ->
     User = authenticate(Req),
     authorized(User, Path) orelse throw({reply, 403, err(<<"forbidden">>, <<"Admin only">>), Req}),
-    %% 管理端资源在 lg_api_admin；未命中返回 ok，落到本模块的 handle/4
-    %% 未命中管理端资源时返回 ok；命中资源已在内部完成 reply / throw
-    _ = lg_api_admin:handle(Method, Path, User, Req),
-    handle(Method, Path, User, Req).
+    %% 管理端资源在 lg_api_admin：命中时已在内部完成 reply（返回 Req）或 throw；只有未命中才落到本模块的 handle/4。
+    %% 此前忽略返回值，命中后仍会走到 handle/4 的兜底再回一次 404，cowboy 因重复回复让连接进程崩溃
+    case lg_api_admin:handle(Method, Path, User, Req) of
+        nomatch -> handle(Method, Path, User, Req);
+        Req1 -> Req1
+    end.
 
 authorized(#lg_user{role = admin}, _) -> true;
 authorized(_, [<<"auth">> | _]) -> true;

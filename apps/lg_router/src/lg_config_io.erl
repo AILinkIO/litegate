@@ -27,6 +27,24 @@
 
 -spec export(binary()) -> {ok, map()} | {error, term()}.
 export(Pass) when is_binary(Pass), byte_size(Pass) >= ?MIN_PASSPHRASE ->
+    case snapshot() of
+        {ok, Snap} -> export(Pass, Snap);
+        {error, _} = E -> E
+    end;
+export(_) ->
+    {error, {invalid, <<"passphrase">>}}.
+
+%% 导出的各表在一个只读事务里读取（表级读锁），是同一时刻的快照（T33；此前逐表脏读，
+%% 导出期间的导入等事务性改动可能只体现在部分表里）。排序与各模块 list 函数一致；
+%% 重新加密（PBKDF2）在事务外做，不长时间持锁
+-define(EXPORT_TABS, [lg_credential, lg_route, lg_api_key, lg_limit, lg_budget, lg_model_overlay, lg_setting,
+                      lg_user, lg_channel, lg_alert_rule, lg_middleware]).
+
+snapshot() ->
+    lg_db:transaction(fun() -> maps:from_list([{T, mnesia:select(T, [{'_', [], ['$_']}], read)} || T <- ?EXPORT_TABS]) end).
+
+export(Pass, Snap) ->
+    T = fun(Tab) -> maps:get(Tab, Snap) end,
     Salt = crypto:strong_rand_bytes(16),
     Key = derive(Pass, Salt, ?ITER),
     try
@@ -36,23 +54,24 @@ export(Pass) when is_binary(Pass), byte_size(Pass) >= ?MIN_PASSPHRASE ->
                <<"kdf">> => #{<<"alg">> => <<"pbkdf2-sha256">>, <<"iter">> => ?ITER,
                               <<"salt">> => base64:encode(Salt)},
                <<"check">> => seal(Key, ?CHECK),
-               <<"credentials">> => [credential_out(C, Key) || C <- lg_credentials:list()],
-               <<"routes">> => [lg_routes:to_map(R) || R <- lg_routes:list()],
-               <<"api_keys">> => [api_key_out(K) || K <- lg_api_keys:list()],
-               <<"limits">> => [lg_limits:limit_to_map(L) || L <- lg_limits:list_limits()],
-               <<"budgets">> => [lg_limits:budget_to_map(B) || B <- lg_limits:list_budgets()],
-               <<"model_overlays">> => [overlay_out(O) || O <- lg_db:all(lg_model_overlay)],
+               <<"credentials">> => [credential_out(C, Key) || C <- lists:keysort(#lg_credential.created_at, T(lg_credential))],
+               <<"routes">> => [lg_routes:to_map(R) || R <- lists:keysort(#lg_route.name, T(lg_route))],
+               <<"api_keys">> => [api_key_out(K) || K <- lists:keysort(#lg_api_key.created_at, T(lg_api_key))],
+               <<"limits">> => [lg_limits:limit_to_map(L) || L <- T(lg_limit)],
+               <<"budgets">> => [lg_limits:budget_to_map(B) || B <- T(lg_budget)],
+               <<"model_overlays">> => [overlay_out(O) || O <- T(lg_model_overlay)],
                <<"settings">> => [#{<<"key">> => atom_to_binary(K), <<"value">> => V}
-                                  || #lg_setting{key = K, value = V} <- lg_db:all(lg_setting)],
-               <<"users">> => [user_out(U) || U <- lg_users:list()],
-               <<"alert_channels">> => [channel_out(C, Key) || C <- lg_alerts:channels()],
-               <<"alert_rules">> => [lg_alerts:rule_to_map(R) || R <- lg_alerts:rules()],
-               <<"middleware">> => [lg_middlewares:to_map(M) || M <- lg_middlewares:list()]}}
+                                  || #lg_setting{key = K, value = V} <- T(lg_setting)],
+               <<"users">> => [user_out(U) || U <- lists:keysort(#lg_user.created_at, T(lg_user))],
+               <<"alert_channels">> => [channel_out(C, Key) || C <- lists:keysort(#lg_channel.created_at, T(lg_channel))],
+               <<"alert_rules">> => [lg_alerts:rule_to_map(R) || R <- lists:keysort(#lg_alert_rule.created_at, T(lg_alert_rule))],
+               <<"middleware">> => [lg_middlewares:to_map(M)
+                                    || M <- lists:sort(fun(#lg_middleware{position = A, name = NA}, #lg_middleware{position = B, name = NB}) ->
+                                                               {A, NA} =< {B, NB}
+                                                       end, T(lg_middleware))]}}
     catch
         throw:{credential_key, Id} -> {error, {undecryptable_credential, Id}}
-    end;
-export(_) ->
-    {error, {invalid, <<"passphrase">>}}.
+    end.
 
 credential_out(#lg_credential{id = Id, api_key_enc = Enc} = C, Key) ->
     Plain = case Enc of
@@ -103,7 +122,15 @@ import(#{<<"format">> := ?FORMAT, <<"version">> := ?VERSION,
                          end
                  end,
             case lg_db:transaction(Tx) of
-                {ok, Stats} -> lg_cooldown:clear(), ok = lg_middleware:reload(), {ok, Stats};
+                {ok, Stats} ->
+                    %% 事务直接写了 lg_setting / lg_route / lg_credential / lg_alert_rule：派生缓存全部重建
+                    ok = lg_config:invalidate_all(),
+                    ok = lg_alerts:refresh_rules(),
+                    ok = lg_routes:rebuild_wildcards(),
+                    _ = catch lg_out_rate:reset(),
+                    lg_cooldown:clear(),
+                    ok = lg_middleware:reload(),
+                    {ok, Stats};
                 {error, {dry_run, Stats}} -> {ok, Stats};
                 {error, _} = Err -> Err
             end;

@@ -193,7 +193,7 @@
 }).
 
 -record(lg_meta, {
-    key          :: atom(),
+    key          :: atom() | {schema_step, atom(), non_neg_integer()},  %% 后者为迁移进度（lg_schema）
     value        :: term()
 }).
 

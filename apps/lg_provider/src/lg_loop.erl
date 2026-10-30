@@ -4,6 +4,7 @@
 %%   周期重复：输出末尾一段 ≥ 8 字节、含文字（字母、数字或非 ASCII）的片段，连续重复 Repeat 次（运行参数 loop_repeat，默认 30）
 %%   整行重复：最近 2×Repeat 个完整行中，同一行（去掉首尾空白后 ≥ 8 字节、含文字）出现 Repeat 次
 %% 只有空白或标点的重复（分隔线、缩进、表格边框）不算。每追加 64 字节检查一次，只检查末尾 8KB。
+%% 每段输出只扫描自身：tail 原地追加、超过 2×8KB 才截取一次；半行只保留前 1KB（超长行对整行判据无意义）。
 -module(lg_loop).
 
 -export([new/0, new/1, feed/2, looped/1]).
@@ -14,12 +15,13 @@
 -define(MAX_UNIT, 256).
 -define(TAIL, 8192).
 -define(CHECK_EVERY, 64).
+-define(MAX_PARTIAL, 1024).
 
 -record(lp, {
     repeat :: pos_integer(),
-    tail = <<>> :: binary(),       %% 最近的输出（最多 ?TAIL 字节）
+    tail = <<>> :: binary(),       %% 最近的输出（判据只看末尾 ?TAIL 字节，最多积累到 2×?TAIL 再截取）
     pending = 0 :: non_neg_integer(),
-    partial = <<>> :: binary(),    %% 还没换行的半行
+    partial = <<>> :: binary(),    %% 还没换行的半行（最多 ?MAX_PARTIAL 字节）
     lines = [] :: [binary()],      %% 最近的完整行（新的在前，最多 2×Repeat）
     looped = false :: boolean()
 }).
@@ -46,29 +48,50 @@ feed(_Text, #lp{looped = true} = S) ->
 feed(<<>>, S) ->
     S;
 feed(Text, #lp{tail = T0, pending = P, partial = Part, lines = Ls, repeat = R} = S) ->
+    %% 原地追加（tail 是上次追加的结果时不拷贝），积累到 2×?TAIL 才截出末尾 ?TAIL 字节
     T1 = <<T0/binary, Text/binary>>,
-    Tail = case byte_size(T1) > ?TAIL of
-               true -> binary:part(T1, byte_size(T1) - ?TAIL, ?TAIL);
+    Tail = case byte_size(T1) > 2 * ?TAIL of
+               true -> binary:copy(binary:part(T1, byte_size(T1) - ?TAIL, ?TAIL));
                false -> T1
            end,
-    {NewLines, Partial} = split_lines(<<Part/binary, Text/binary>>),
-    Lines = lists:sublist(lists:reverse(NewLines) ++ Ls, 2 * R),
+    {NewLines, Partial} = split_lines(Part, Text),
+    Lines = case NewLines of
+                [] -> Ls;
+                _ -> lists:sublist(lists:reverse(NewLines) ++ Ls, 2 * R)
+            end,
     S1 = S#lp{tail = Tail, partial = Partial, lines = Lines, pending = P + byte_size(Text)},
     case S1#lp.pending >= ?CHECK_EVERY of
-        true -> S1#lp{pending = 0, looped = periodic(Tail, R) orelse repeated_line(Lines, R)};
+        true -> S1#lp{pending = 0, looped = periodic(last(Tail, ?TAIL), R) orelse repeated_line(Lines, R)};
         false -> S1#lp{looped = NewLines =/= [] andalso repeated_line(Lines, R)}
     end.
 
-split_lines(B) ->
-    case binary:split(B, <<"\n">>, [global]) of
-        [Only] -> {[], Only};
-        Parts -> {lists:droplast(Parts), lists:last(Parts)}
+%% 只切分新文本：无换行时追加到半行；切出的行拷贝出来，不钉住上游数据块
+split_lines(Part, Text) ->
+    case binary:split(Text, <<"\n">>, [global]) of
+        [_] -> {[], cap(Part, Text)};
+        [First | More] ->
+            {Mid, [Last]} = lists:split(length(More) - 1, More),
+            {[cap(Part, First) | [cap(<<>>, L) || L <- Mid]], cap(<<>>, Last)}
     end.
 
-%% 末尾是否由同一片段连续重复 R 次构成
+%% 半行追加并截断到 ?MAX_PARTIAL 字节；结果总是新的 binary（不引用 Text）
+cap(Part, _Text) when byte_size(Part) >= ?MAX_PARTIAL -> Part;
+cap(<<>>, Text) -> binary:copy(binary:part(Text, 0, min(byte_size(Text), ?MAX_PARTIAL)));
+cap(Part, Text) when byte_size(Part) + byte_size(Text) =< ?MAX_PARTIAL -> <<Part/binary, Text/binary>>;
+cap(Part, Text) -> <<Part/binary, (binary:part(Text, 0, ?MAX_PARTIAL - byte_size(Part)))/binary>>.
+
+last(B, N) when byte_size(B) > N -> binary:part(B, byte_size(B) - N, N);
+last(B, _) -> B.
+
+%% 末尾是否由同一片段连续重复 R 次构成（先比末字节与前一周期对应字节，不等即跳过，避免逐个长度切片）
 periodic(Tail, R) ->
-    Len = byte_size(Tail),
-    lists:any(fun(P) -> P * R =< Len andalso repeats(Tail, Len, P, R) end, lists:seq(?MIN_UNIT, ?MAX_UNIT)).
+    periodic(Tail, byte_size(Tail), R, ?MIN_UNIT).
+
+periodic(_Tail, _Len, _R, P) when P > ?MAX_UNIT ->
+    false;
+periodic(Tail, Len, R, P) ->
+    (P * R =< Len andalso binary:at(Tail, Len - 1) =:= binary:at(Tail, Len - 1 - P) andalso repeats(Tail, Len, P, R))
+        orelse periodic(Tail, Len, R, P + 1).
 
 repeats(Tail, Len, P, R) ->
     Unit = binary:part(Tail, Len - P, P),

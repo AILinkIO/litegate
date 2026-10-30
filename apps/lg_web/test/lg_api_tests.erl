@@ -21,7 +21,8 @@ api_test_() ->
               ?_test(config_io(Ctx)),
               ?_test(alerts(Ctx)),
               ?_test(openapi(Ctx)),
-              ?_test(console_static(Ctx))]
+              ?_test(console_static(Ctx)),
+              ?_test(single_reply_keepalive(Ctx))]
      end}.
 
 setup() ->
@@ -51,6 +52,26 @@ req(#{port := Port}, Method, Path, Headers, Body) ->
           end,
     gun:close(Conn),
     Res.
+
+%% 管理端资源（lg_api_admin）与 lg_api 自身资源各回复一次：同一条 keep-alive 连接上连续请求都能拿到响应、
+%% 连接进程不崩溃（此前 lg_api_admin 命中后仍落到 lg_api 的 404 兜底，重复回复让 cowboy 连接进程崩溃）
+single_reply_keepalive(#{port := Port, admin := Token}) ->
+    {ok, Conn} = gun:open("127.0.0.1", Port, #{retry => 0}),
+    {ok, _} = gun:await_up(Conn, 5000),
+    MRef = monitor(process, Conn),
+    H = [{<<"authorization">>, <<"Bearer ", Token/binary>>}],
+    Get = fun(Path) ->
+                  Ref = gun:get(Conn, Path, H),
+                  {response, _, S, _} = gun:await(Conn, Ref, 10000),
+                  _ = gun:await_body(Conn, Ref, 10000),
+                  S
+          end,
+    %% 管理端资源、本模块资源、未知路径，各两轮
+    [?assertEqual([200, 200, 404], [Get(<<"/api/settings">>), Get(<<"/api/keys">>), Get(<<"/api/nope">>)])
+     || _ <- [1, 2]],
+    receive {gun_down, Conn, _, _, _} -> ?assert(false) after 100 -> ok end,
+    demonitor(MRef, [flush]),
+    gun:close(Conn).
 
 %% 带 Bearer 会话 token 的 JSON 请求，返回 {Status, DecodedBody}
 api(Ctx, Token, Method, Path) -> api(Ctx, Token, Method, Path, undefined).

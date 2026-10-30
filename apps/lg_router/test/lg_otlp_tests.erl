@@ -47,36 +47,57 @@ big_log(BodyBytes) ->
             duration_ms => 1, status => 200},
     {Log, Messages, #{}}.
 
+%% 端点不可达（127.0.0.1:1），flush 返回 {error, _}；这里只关心入队计数，不断言导出结果
+submit({Log, Messages, Extra}) ->
+    lg_otlp:submit(Log, Messages, Extra).
+
 strip_at_threshold() ->
+    Pid = whereis(lg_otlp),
     %% 40KB body：一个 span 约 40KB，占 64KB 上限的 62%（超过 50% 阈值）
-    ok = lg_otlp:submit(big_log(40960)),
+    ok = submit(big_log(40960)),
     %% 等待 gen_server 处理（cast 异步）
     timer:sleep(50),
     ?assert(counter(litegate_otlp_stripped_total) >= 1),
-    ok = lg_otlp:flush().
+    %% 剥离路径不能让进程崩溃（此前把 boolean 当整数累加，崩溃后连带 lg_router 退出）
+    ?assertEqual(Pid, whereis(lg_otlp)),
+    _ = lg_otlp:flush().
+
+%% 队列状态（sys:get_state 排在此前投递的 cast 之后处理，返回时这些 span 已入队）
+queue_state() ->
+    #{len := Len, bytes := Bytes} = sys:get_state(lg_otlp),
+    {Len, Bytes}.
 
 drop_at_cap() ->
-    %% 每条 40KB body，两条 80KB > 64KB 上限 → 第二条应被丢
-    ok = lg_otlp:submit(big_log(40960)),
-    timer:sleep(50),
-    ok = lg_otlp:submit(big_log(40960)),
-    timer:sleep(50),
-    ?assert(counter(litegate_otlp_dropped_total) >= 1),
-    ok = lg_otlp:flush().
+    %% 超 50% 阈值先剥 body；剥离后仍超上限才丢。上限 4KB 时剥离后的 span（约 2KB 固定开销）只能放下两条，
+    %% 第三条起丢弃。端点不可达，定时导出失败也计入 dropped，所以只断言下限与队列不变量
+    ok = lg_config:set(otlp_queue_max_bytes, 4096),
+    _ = lg_otlp:flush(),
+    Before = counter(litegate_otlp_dropped_total),
+    [ok = submit(big_log(40960)) || _ <- lists:seq(1, 4)],
+    {Len, Bytes} = queue_state(),
+    ?assert(Len =< 2),
+    ?assert(Bytes =< 4096),
+    ?assert(counter(litegate_otlp_dropped_total) - Before >= 2),
+    _ = lg_otlp:flush().
 
 bytes_zero_after_flush() ->
-    ok = lg_otlp:submit(big_log(1024)),
-    timer:sleep(50),
-    ?assertEqual(0, counter(litegate_otlp_dropped_total)),
-    ok = lg_otlp:flush(),
-    %% flush 后队列和 bytes 归零（内部 state 验证通过 queue 空推断）
-    ok = lg_otlp:submit(big_log(1024)),
-    timer:sleep(50),
-    ?assertEqual(0, counter(litegate_otlp_dropped_total)).
+    ok = submit(big_log(1024)),
+    {Len0, Bytes0} = queue_state(),
+    ?assert(Len0 >= 1 orelse Bytes0 =:= 0),        %% 期间可能刚好被定时导出取走
+    _ = lg_otlp:flush(),
+    %% flush（无论导出成败）后队列与字节计数归零
+    ?assertEqual({0, 0}, queue_state()),
+    %% 小 span 不剥离、不丢弃
+    Stripped = counter(litegate_otlp_stripped_total),
+    ok = submit(big_log(1024)),
+    {Len1, _} = queue_state(),
+    ?assert(Len1 =< 1),
+    ?assertEqual(Stripped, counter(litegate_otlp_stripped_total)),
+    _ = lg_otlp:flush().
 
 no_bodies_no_strip() ->
     ok = lg_config:set(otlp_bodies, false),
-    ok = lg_otlp:submit(big_log(40960)),
+    ok = submit(big_log(40960)),
     timer:sleep(50),
     ?assertEqual(0, counter(litegate_otlp_stripped_total)),
-    ok = lg_otlp:flush().
+    _ = lg_otlp:flush().

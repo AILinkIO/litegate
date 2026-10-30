@@ -8,7 +8,8 @@
 
 -export([handle/4]).
 
-%% lg_api 的路由分发进入；未命中返回 ok，由 lg_api 继续匹配（最终 404）
+%% lg_api 的路由分发进入；命中时完成回复并返回 Req（或 throw），未命中返回 nomatch 由 lg_api 继续匹配（最终 404）
+-spec handle(binary(), [binary()], term(), cowboy_req:req()) -> cowboy_req:req() | nomatch.
 handle(Method, Path, User, Req) ->
     handle_(Method, Path, User, Req).
 
@@ -184,7 +185,8 @@ handle_(<<"POST">>, [<<"plans">>, <<"refresh">>], _U, Req0) ->
                 L when is_list(L) -> [X || X <- L, is_binary(X)];
                 _ -> all
             end,
-    ok = lg_plan:refresh(Which),
+    %% 超时仍在查询时返回当前状态（条目带 refreshing: true），结果稍后写入
+    _ = lg_plan:refresh(Which),
     lg_api:reply(200, lg_api:clean(lg_plan:all()), Req);
 
 %% ---- 上游参数兼容（已学到的限制） ----
@@ -263,7 +265,7 @@ handle_(<<"POST">>, [<<"balances">>, <<"refresh">>], _U, Req0) ->
                 L when is_list(L) -> [X || X <- L, is_binary(X)];
                 _ -> all
             end,
-    ok = lg_balance:refresh(Which),
+    _ = lg_balance:refresh(Which),
     lg_api:reply(200, lg_api:clean(lg_balance:all()), Req);
 
 %% ---- 配置导入导出 ----
@@ -361,7 +363,7 @@ handle_(<<"PUT">>, [<<"settings">>, K], _U, Req0) ->
     [S] = [setting_out(X) || X = #{key := Key0} <- lg_config:all(), Key0 =:= Key],
     lg_api:reply(200, S, Req);
 handle_(_, _, _, _) ->
-    ok.
+    nomatch.
 
 match_model(M, Q) ->
     (case lg_api:qs(<<"q">>, Q) of

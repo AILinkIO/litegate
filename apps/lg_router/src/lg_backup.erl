@@ -14,7 +14,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(CHECK_MS, 3600000).  %% 每小时检查一次是否到期
--define(NAME_RE, "^litegate-backup-\\d{8}-\\d{6}\\.json$").
+%% 文件名精确到毫秒（T33；此前只到秒，同秒两次备份互相覆盖），旧的秒级文件名照常列出、滚动删除
+-define(NAME_RE, "^litegate-backup-\\d{8}-\\d{6}(-\\d{3})?\\.json$").
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
@@ -106,19 +107,37 @@ do_backup() ->
             {error, {invalid, <<"backup_passphrase">>}}
     end.
 
+%% 目录建不了 / 写不了 / 改名失败都返回错误（由 finish/1 记日志与状态），不让 gen_server 崩溃
 write_snapshot(Json) ->
-    Name = iolist_to_binary(io_lib:format("litegate-backup-~s.json", [ts()])),
+    Name = name(),
     Tmp = filename:join(dir(), <<Name/binary, ".tmp">>),
     Path = filename:join(dir(), Name),
-    ok = filelib:ensure_dir(Tmp),
-    case file:write_file(Tmp, Json) of
+    case filelib:ensure_dir(Tmp) of
         ok ->
-            ok = file:rename(Tmp, Path),
-            prune(),
-            {ok, #{file => Name, size => byte_size(Json)}};
-        {error, _} = E ->
-            _ = file:delete(Tmp),
-            E
+            case file:write_file(Tmp, Json) of
+                ok ->
+                    case file:rename(Tmp, Path) of
+                        ok ->
+                            prune(),
+                            {ok, #{file => Name, size => byte_size(Json)}};
+                        {error, Why} ->
+                            _ = file:delete(Tmp),
+                            {error, {rename, Why}}
+                    end;
+                {error, Why} ->
+                    _ = file:delete(Tmp),
+                    {error, {write, Why}}
+            end;
+        {error, Why} ->
+            {error, {backup_dir, Why}}
+    end.
+
+%% 同一毫秒内已有同名文件时等到下一毫秒（备份经本进程串行，不会与自己并发）
+name() ->
+    Name = iolist_to_binary(io_lib:format("litegate-backup-~s.json", [ts()])),
+    case filelib:is_file(filename:join(dir(), Name)) of
+        true -> timer:sleep(1), name();
+        false -> Name
     end.
 
 finish({ok, #{file := F, size := N}}) ->
@@ -144,18 +163,19 @@ files() ->
         {ok, Names} ->
             %% file:list_dir 返回 char list；先转 binary 再按名字过滤（过滤器须为布尔表达式）
             Bin = [iolist_to_binary(N0) || N0 <- Names, is_list(N0)],
-            Info = [begin
-                        {ok, #file_info{size = S, mtime = M}} = file:read_file_info(filename:join(Dir, N)),
-                        {N, S, (calendar:datetime_to_gregorian_seconds(M) - 62167219200) * 1000}
-                    end || N <- Bin, re:run(N, ?NAME_RE) =/= nomatch],
+            %% 列目录与读文件信息之间被删掉的文件跳过
+            Info = [{N, S, (calendar:datetime_to_gregorian_seconds(M) - 62167219200) * 1000}
+                    || N <- Bin, re:run(N, ?NAME_RE) =/= nomatch,
+                       {ok, #file_info{size = S, mtime = M}} <- [file:read_file_info(filename:join(Dir, N))]],
             lists:sort(fun({A, _, _}, {B, _, _}) -> A > B end, Info);
         {error, _} ->
             []
     end.
 
 ts() ->
-    {{Y, Mo, D}, {H, Mi, S}} = calendar:local_time(),
-    io_lib:format("~4..0B~2..0B~2..0B-~2..0B~2..0B~2..0B", [Y, Mo, D, H, Mi, S]).
+    Ms = os:system_time(millisecond),
+    {{Y, Mo, D}, {H, Mi, S}} = calendar:system_time_to_local_time(Ms div 1000, second),
+    io_lib:format("~4..0B~2..0B~2..0B-~2..0B~2..0B~2..0B-~3..0B", [Y, Mo, D, H, Mi, S, Ms rem 1000]).
 
 reason({invalid, K}) -> <<"Invalid setting: ", K/binary>>;
 reason(Why) -> iolist_to_binary(io_lib:format("~0p", [Why])).

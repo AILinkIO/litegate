@@ -110,28 +110,15 @@ check_scopes([Scope | Rest], Now) ->
             check_scopes(Rest, Now)
     end.
 
-%% 从小时汇总重建：覆盖本周与本月中较早的起点
+%% 从小时汇总重建：覆盖本周与本月中较早的起点（读每小时费用分解，见 lg_store:usage_costs/2）
 rebuild() ->
     Now = lg_time:now_ms(),
     From = min(period_start(week, Now), period_start(month, Now)),
-    Rows = lg_store:usage(#{from => From, to => Now + 1, group_by => [hour, key_id, user_id]}),
     lists:foreach(
-      fun(#{hour := HourMs, key_id := K, user_id := U, cost := Cost}) when Cost > 0 ->
-              Micro = round(Cost * 1.0e6),
-              [bump({S, P, period_start(P, HourMs)}, Micro)
-               || S <- [{key, K} || is_binary(K)] ++ [{user, U} || is_binary(U)],
-                  P <- [day, week, month]];
-         (_) ->
-              ok
-      end, Rows),
-    TagRows = lg_store:usage(#{from => From, to => Now + 1, group_by => [hour, tag]}),
-    lists:foreach(
-      fun(#{hour := HourMs, tag := T, cost := Cost}) when Cost > 0, is_binary(T) ->
-              Micro = round(Cost * 1.0e6),
-              [bump({{tag, T}, P, period_start(P, HourMs)}, Micro) || P <- [day, week, month]];
-         (_) ->
-              ok
-      end, TagRows).
+      fun({HourMs, Costs}) ->
+              [bump({S, P, period_start(P, HourMs)}, round(Cost * 1.0e6))
+               || S := Cost <- Costs, P <- [day, week, month]]
+      end, lg_store:usage_costs(From, Now + 1)).
 
 micro(Scope, Period, Start) ->
     case ets:lookup(?TAB, {Scope, Period, Start}) of

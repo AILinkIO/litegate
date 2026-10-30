@@ -183,3 +183,78 @@ anthropic_leading_ping_test() ->
     {Out, _} = run(#{client => anthropic, upstream => anthropic}, Sse),
     {Evs, <<>>} = lg_sse:parse(Out),
     ?assertEqual([<<"message_start">>, <<"ping">>, <<"message_delta">>, <<"message_stop">>], [E || #{event := E} <- Evs]).
+
+%% map_output：第一级直接输出 Chat chunk map，与 SSE 帧输出解码后一致（Responses 转换的第二级输入不变）
+map_output_test() ->
+    Ev = fun(T, M) -> iolist_to_binary(lg_sse:encode(T, json:encode(M#{<<"type">> => T}))) end,
+    Anth = iolist_to_binary(
+             [Ev(<<"message_start">>, #{<<"message">> => #{<<"id">> => <<"m1">>, <<"model">> => <<"claude">>,
+                                                           <<"usage">> => #{<<"input_tokens">> => 7}}}),
+              Ev(<<"content_block_start">>, #{<<"index">> => 0, <<"content_block">> => #{<<"type">> => <<"tool_use">>,
+                                                                                       <<"id">> => <<"t1">>, <<"name">> => <<"f">>}}),
+              Ev(<<"content_block_delta">>, #{<<"index">> => 0, <<"delta">> => #{<<"type">> => <<"input_json_delta">>,
+                                                                                <<"partial_json">> => <<"{}">>}}),
+              Ev(<<"content_block_delta">>, #{<<"index">> => 1, <<"delta">> => #{<<"type">> => <<"text_delta">>, <<"text">> => <<"hi">>}}),
+              Ev(<<"error">>, #{<<"error">> => #{<<"type">> => <<"overloaded_error">>, <<"message">> => <<"busy">>}}),
+              Ev(<<"message_delta">>, #{<<"delta">> => #{<<"stop_reason">> => <<"end_turn">>}, <<"usage">> => #{<<"output_tokens">> => 2}})]),
+    lists:foreach(
+      fun({Opts, Sse}) ->
+              {Evs, <<>>} = lg_sse:parse(Sse),
+              Run = fun(St0) ->
+                            {F, St} = lists:foldl(fun(E, {Acc, S}) -> {F1, S1} = lg_stream:feed(E, S), {Acc ++ F1, S1} end,
+                                                  {[], St0}, Evs),
+                            {Tail, R} = lg_stream:finish(St),
+                            {F ++ Tail, R}
+                    end,
+              {Frames, R1} = Run(lg_stream:new(Opts)),
+              {Maps, R2} = Run(lg_stream:map_output(lg_stream:new(Opts))),
+              NoCreated = fun(M) -> maps:remove(<<"created">>, M) end,
+              ?assertEqual([NoCreated(M) || M <- decode(iolist_to_binary(Frames)), M =/= done], [NoCreated(M) || M <- Maps]),
+              ?assertEqual(R1, R2)
+      end, [{#{client => openai, upstream => openai, include_usage => true}, openai_sse()},
+            {#{client => openai, upstream => anthropic, include_usage => true}, Anth}]).
+
+%% 10 万 token 的流：累积文本不钉住上游数据块（json:decode 返回的 delta 是输入的 sub-binary），
+%% 处理进程引用的 binary 总量有界（改动前约 3.4MB）
+token_stream_binary_memory_test_() ->
+    {timeout, 60,
+     fun() ->
+             Parent = self(),
+             Chunk = fun(I0) ->
+                             iolist_to_binary(
+                               [lg_sse:encode(json:encode(#{<<"id">> => <<"c1">>, <<"model">> => <<"m">>,
+                                                            <<"object">> => <<"chat.completion.chunk">>,
+                                                            <<"choices">> => [#{<<"index">> => 0, <<"finish_reason">> => null,
+                                                                                <<"delta">> => #{<<"content">> => <<" w", (integer_to_binary(I))/binary>>}}]}))
+                                || I <- lists:seq(I0, I0 + 19)])
+                     end,
+             spawn_link(fun() ->
+                                Loop = fun Loop(I, Buf, St, Rs) when I < 100000 ->
+                                               {Evs, Buf1} = lg_sse:feed(Chunk(I), Buf),
+                                               {St1, Rs1} = lists:foldl(fun(#{data := D} = E, {S, R}) ->
+                                                                                {_, S1} = lg_stream:feed(E, S),
+                                                                                {_, R1} = lg_resp_stream:feed(json:decode(D), R),
+                                                                                {S1, R1}
+                                                                        end, {St, Rs}, Evs),
+                                               Loop(I + 20, Buf1, St1, Rs1);
+                                           Loop(_, _, St, Rs) ->
+                                               {St, Rs}
+                                       end,
+                                {St, Rs} = Loop(0, lg_sse:new(),
+                                                lg_stream:new(#{client => openai, upstream => openai, loop_guard => true}),
+                                                lg_resp_stream:new(#{mode => converted, request => #{}, id => <<"resp_1">>})),
+                                Bytes = lg_test_alloc:binary_bytes(),
+                                %% 测量之后仍使用累积状态，保证测量时它们存活
+                                {_, #{text := T1}} = lg_stream:finish(St),
+                                #{text := T2} = lg_resp_stream:result(Rs),
+                                Parent ! {bytes, Bytes, byte_size(T1), byte_size(T2)}
+                        end),
+             receive
+                 {bytes, Bytes, L1, L2} ->
+                     ?debugFmt("10 万 token 流：进程 binary 引用 ~b 字节（文本 ~b + ~b 字节）", [Bytes, L1, L2]),
+                     ?assert(L1 > 500000 andalso L1 =:= L2),
+                     ?assert(Bytes < 2 * 1024 * 1024)
+             after 50000 ->
+                     error(timeout)
+             end
+     end}.

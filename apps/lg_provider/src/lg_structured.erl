@@ -158,32 +158,23 @@ unfence(T) ->
         nomatch -> T
     end.
 
-%% @doc 流式 Anthropic 事件：强制工具方式时，该工具的内容块改写为文本块（参数分片 → 文本分片），
+%% @doc 流式 Anthropic 事件（已解码的 data）：强制工具方式时，该工具的内容块改写为文本块（参数分片 → 文本分片），
 %% stop_reason tool_use → end_turn。State：当前被改写的内容块 index 集合。
--spec stream_event({map(), [integer()]}, binary()) -> {map(), [integer()]}.
-stream_event({#{data := D} = Ev, Idx}, Name) when is_binary(D) ->
-    case catch json:decode(D) of
+%% 返回 {rewrite, 新 map} 时调用方按新 map 重新编码事件，keep 表示原样。
+-spec stream_event({term(), [integer()]}, binary()) -> {keep | {rewrite, map()}, [integer()]}.
+stream_event({J, Idx}, Name) ->
+    case J of
         #{<<"type">> := <<"content_block_start">>, <<"index">> := I,
-          <<"content_block">> := #{<<"type">> := <<"tool_use">>, <<"name">> := Name}} = J ->
-            {reencode(Ev, J#{<<"content_block">> => #{<<"type">> => <<"text">>, <<"text">> => <<>>}}), [I | Idx]};
+          <<"content_block">> := #{<<"type">> := <<"tool_use">>, <<"name">> := Name}} ->
+            {{rewrite, J#{<<"content_block">> => #{<<"type">> => <<"text">>, <<"text">> => <<>>}}}, [I | Idx]};
         #{<<"type">> := <<"content_block_delta">>, <<"index">> := I,
-          <<"delta">> := #{<<"type">> := <<"input_json_delta">>, <<"partial_json">> := P}} = J ->
+          <<"delta">> := #{<<"type">> := <<"input_json_delta">>, <<"partial_json">> := P}} ->
             case lists:member(I, Idx) of
-                true -> {reencode(Ev, J#{<<"delta">> => #{<<"type">> => <<"text_delta">>, <<"text">> => P}}), Idx};
-                false -> {Ev, Idx}
+                true -> {{rewrite, J#{<<"delta">> => #{<<"type">> => <<"text_delta">>, <<"text">> => P}}}, Idx};
+                false -> {keep, Idx}
             end;
-        #{<<"type">> := <<"message_delta">>, <<"delta">> := #{<<"stop_reason">> := <<"tool_use">>} = Dl} = J when Idx =/= [] ->
-            {reencode(Ev, J#{<<"delta">> => Dl#{<<"stop_reason">> => <<"end_turn">>}}), Idx};
+        #{<<"type">> := <<"message_delta">>, <<"delta">> := #{<<"stop_reason">> := <<"tool_use">>} = Dl} when Idx =/= [] ->
+            {{rewrite, J#{<<"delta">> => Dl#{<<"stop_reason">> => <<"end_turn">>}}}, Idx};
         _ ->
-            {Ev, Idx}
-    end;
-stream_event({Ev, Idx}, _Name) ->
-    {Ev, Idx}.
-
-reencode(#{event := E} = Ev, J) ->
-    D = iolist_to_binary(json:encode(J)),
-    Raw = case E of
-              undefined -> lg_sse:encode(D);
-              _ -> lg_sse:encode(E, D)
-          end,
-    Ev#{data => D, raw => iolist_to_binary(Raw)}.
+            {keep, Idx}
+    end.

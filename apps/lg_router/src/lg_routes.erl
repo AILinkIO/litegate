@@ -16,10 +16,9 @@
 -include_lib("lg_core/include/lg_core.hrl").
 
 -export([create/1, update/2, delete/1, get/1, list/0, to_map/1, match/1, is_wildcard/1, build_tx/2, build_tx/3,
-         aliases/1, check_graph_tx/0, rebuild_wildcards/0]).
+         aliases/1, check_graph_tx/0, rebuild_wildcards/0, wildcard_prefix/1]).
 
 -define(MAX_NESTING, 3).
--define(WC_TAB, lg_route_wildcards).
 
 %% 合法顶层字段；未知字段（如把 rules/classifier 误放在顶层）静默丢弃会让用户误以为已保存，直接拒绝
 -define(FIELDS, [<<"name">>, <<"targets">>, <<"fallbacks">>, <<"access">>, <<"options">>, <<"aliases">>, <<"enabled">>]).
@@ -99,46 +98,47 @@ match(Name) ->
     end.
 
 match_wildcard(Name) ->
-    ensure_wc(),
-    NameLen = byte_size(Name),
-    Matches = [{PL, P, RN} || {PL, P, RN} <- ets:tab2list(?WC_TAB),
-                              PL =< NameLen,
-                              binary:part(Name, 0, PL) =:= P],
-    case lists:reverse(lists:keysort(1, Matches)) of
-        [{PL, _, RN} | _] ->
+    case find_wildcard(Name, lg_route_cache:wildcards()) of
+        {ok, PL, RN} ->
             case lg_db:read(lg_route, RN) of
-                {ok, R} -> {ok, R, binary:part(Name, PL, NameLen - PL)};
+                {ok, R} -> {ok, R, binary:part(Name, PL, byte_size(Name) - PL)};
                 not_found ->
-                    %% 缓存过期（路由已删）：重建后重试一次
+                    %% 缓存过期（路由刚删）：重建后重试一次；仍不一致则按未命中处理，不再递归
                     ok = rebuild_wildcards(),
-                    match_wildcard(Name)
+                    case find_wildcard(Name, lg_route_cache:wildcards()) of
+                        {ok, PL2, RN2} when RN2 =/= RN ->
+                            case lg_db:read(lg_route, RN2) of
+                                {ok, R2} -> {ok, R2, binary:part(Name, PL2, byte_size(Name) - PL2)};
+                                not_found -> not_found
+                            end;
+                        _ -> not_found
+                    end
             end;
+        not_found -> not_found
+    end.
+
+%% Wildcards 已按前缀长度降序排列：第一个匹配即最长前缀。
+%% 剩余部分不能为空：名称恰好等于前缀（如 `or/`）时落到更短的通配
+find_wildcard(Name, Wildcards) ->
+    NameLen = byte_size(Name),
+    case [{PL, RN} || {PL, P, RN} <- Wildcards, PL < NameLen, binary:part(Name, 0, PL) =:= P] of
+        [{PL, RN} | _] -> {ok, PL, RN};
         [] -> not_found
     end.
 
-%% 从路由表全量重建通配前缀缓存（写路由后调用）
+%% @doc 从路由表全量重建通配前缀缓存（写路由、导入配置后调用）。
+-spec rebuild_wildcards() -> ok.
 rebuild_wildcards() ->
-    ensure_wc(),
-    Wildcards = [{byte_size(P), P, N}
-                 || #lg_route{name = N} <- lg_db:all(lg_route),
-                    is_wildcard(N),
-                    P <- [prefix(N)]],
-    true = ets:delete_all_objects(?WC_TAB),
-    true = ets:insert(?WC_TAB, Wildcards),
-    ok.
-
-ensure_wc() ->
-    _ = catch ets:new(?WC_TAB, [named_table, public, {read_concurrency, true},
-                                {write_concurrency, true}]),
-    ok.
+    lg_route_cache:rebuild().
 
 -spec is_wildcard(binary()) -> boolean().
 is_wildcard(<<"*">>) -> true;
 is_wildcard(N) -> N =/= <<>> andalso binary:last(N) =:= $*.
 
-%% 通配前缀（去掉末尾的 *）
-prefix(<<"*">>) -> <<>>;
-prefix(N) -> binary:part(N, 0, byte_size(N) - 1).
+%% @doc 通配前缀（去掉末尾的 *）。
+-spec wildcard_prefix(binary()) -> binary().
+wildcard_prefix(<<"*">>) -> <<>>;
+wildcard_prefix(N) -> binary:part(N, 0, byte_size(N) - 1).
 
 %% @doc 路由的别名（排序）。
 -spec aliases(binary()) -> [binary()].

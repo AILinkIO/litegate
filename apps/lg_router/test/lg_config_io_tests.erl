@@ -12,6 +12,7 @@ config_io_test_() ->
      end,
      fun(Dir) -> lg_core_test_util:stop(Dir) end,
      [{timeout, 60, ?_test(round_trip())},
+      {timeout, 60, ?_test(import_refreshes_caches())},
       ?_test(errors())]}.
 
 -define(PASS, <<"correct horse">>).
@@ -99,6 +100,22 @@ round_trip() ->
     %% 替换导入且文件中没有用户：保留现有用户
     {ok, _} = lg_config_io:import(Decoded#{<<"users">> => []}, ?PASS, replace, false),
     ?assertEqual(1, length(lg_users:list())).
+
+%% T18 / T16 / T27：导入直接写 mnesia，之后运行参数缓存、通配路由缓存与告警规则缓存必须立即反映导入结果
+import_refreshes_caches() ->
+    _ = seed(),
+    {ok, Data} = lg_config_io:export(?PASS),
+    Decoded = json:decode(iolist_to_binary(json:encode(Data))),
+    ok = lg_config:unset(route_max_attempts),
+    ok = lg_routes:delete(<<"w/*">>),
+    [ok = lg_alerts:delete_rule(Id) || #lg_alert_rule{id = Id} <- lg_alerts:rules()],
+    ?assertNotEqual(7, lg_config:get(route_max_attempts)),   %% 缓存里是回落后的值
+    ?assertEqual(not_found, lg_routes:match(<<"w/x">>)),
+    ?assertNot(lg_alerts:has_rules(budget)),
+    {ok, _} = lg_config_io:import(Decoded, ?PASS, merge, false),
+    ?assertEqual(7, lg_config:get(route_max_attempts)),
+    ?assertMatch({ok, #lg_route{name = <<"w/*">>}, <<"x">>}, lg_routes:match(<<"w/x">>)),
+    ?assertMatch([#lg_alert_rule{event = budget, threshold = 75}], lg_alerts:rules(budget)).
 
 wipe() ->
     _ = [mnesia:clear_table(T) || T <- [lg_credential, lg_route, lg_route_alias, lg_api_key, lg_limit, lg_budget,

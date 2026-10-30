@@ -10,7 +10,8 @@
 %% 实现是一个导出上述可选回调的 Erlang 模块（行为 lg_middleware），在 impls/0 中按名称登记：随网关发布的内置模块，
 %% 或控制台里写的 Erlang 源码（运行时编译加载）。配置在 mnesia lg_middleware 表（lg_middlewares 管理），按 position 顺序、按路由生效。
 %%
-%% 出错放行：钩子抛错、返回无法识别的值、超时（on_request / on_response 250ms，在独立进程中运行；on_event 在当前进程运行，
+%% 出错放行：钩子抛错、返回无法识别的值、超时（on_request / on_response 250ms，插件等外来实现在独立进程中运行；
+%% 内置实现在当前进程运行——纯函数变换不会阻塞，只计时不打断，remote 由 erpc 自身超时；on_event 在当前进程运行，
 %% 只计时不打断，超过 50ms 记为慢调用）时原样放行，计数并保留最近一次错误。没有启用任何中间件时不增加开销。
 -module(lg_middleware).
 -behaviour(gen_server).
@@ -30,7 +31,7 @@
 -callback timeout(map()) -> pos_integer().
 -optional_callbacks([on_request/3, on_event/3, on_response/3, hooks/1, timeout/1]).
 
--define(CHAIN, lg_mw_chain).   %% {chain, [Entry]}；Entry = #{id, name, mod, options, routes, hooks, timeout}
+-define(CHAIN, lg_mw_chain).   %% {chain, [Entry]}；Entry = #{id, name, mod, options, routes, hooks, timeout, isolate}
 -define(STATS, lg_mw_stats).   %% {Id, Calls, Failures, Slow, TotalUs} 与 {{last_error, Id}, At, Hook, Message}
 -define(SYNC_TIMEOUT_MS, 250).
 -define(EVENT_SLOW_US, 50000).
@@ -258,7 +259,21 @@ response(#{chain := Chain, ctx := Ctx, states := Sts}, Body0) ->
               end
       end, Body0, Chain).
 
-%% 在独立进程中运行，超时或崩溃时放行
+%% 内置实现（T32）：在当前进程运行，省去把请求体拷入、拷回辅助进程（大量小字段的请求体每次可达数毫秒）。
+%% 内置实现是不阻塞的纯函数变换，只计时不打断（超过超时记为慢调用，结果照用）；remote 由 erpc:call 自身超时
+%% （timeout_ms，比条目超时少 50ms），超时抛错按崩溃放行，与在独立进程中时的结果相同
+call_sync(#{id := Id, isolate := false} = E, Hook, F) ->
+    Timeout = maps:get(timeout, E, ?SYNC_TIMEOUT_MS),
+    T0 = erlang:monotonic_time(microsecond),
+    R = try F() catch C:Why -> {crashed, C, Why} end,
+    Us = erlang:monotonic_time(microsecond) - T0,
+    count(Id, Us, Us > Timeout * 1000),
+    case R of
+        {crashed, _, _} -> failed(E, Hook, R), continue;
+        _ -> R
+    end;
+%% 外来实现（插件目录加载的模块、应用环境登记的模块）在独立进程中运行，超时或崩溃时放行：死循环 / 阻塞时只有独立进程
+%% 才能在超时时打断（当前进程里的定时器打断不了正在运行的代码，杀掉的话连请求一起杀掉）
 call_sync(#{id := Id} = E, Hook, F) ->
     Timeout = maps:get(timeout, E, ?SYNC_TIMEOUT_MS),
     Parent = self(),
@@ -342,7 +357,15 @@ build() ->
 
 entry(Id, N, M, O, Rs) ->
     _ = code:ensure_loaded(M),
-    #{id => Id, name => N, mod => M, options => O, routes => Rs, hooks => entry_hooks(M, O), timeout => entry_timeout(M, O)}.
+    #{id => Id, name => N, mod => M, options => O, routes => Rs, hooks => entry_hooks(M, O), timeout => entry_timeout(M, O),
+      isolate => not builtin(M)}.
+
+%% 随网关发布的内置实现（插件不能与之同名，见 do_rescan/0）
+builtin(M) ->
+    case application:get_key(lg_router, modules) of
+        {ok, Ms} -> lists:member(M, Ms);
+        undefined -> false
+    end.
 
 %% @doc 试运行：用实现与配置对一个示例请求体调用一次 on_request（不经过路由、不访问上游，不计入统计）。
 %% 返回 #{result => continue | {ok, Body} | {ok, Body, State} | {reject, S, M} | {error, 原因}, us => 耗时}。

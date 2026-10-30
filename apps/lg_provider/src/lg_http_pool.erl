@@ -8,15 +8,20 @@
 %%
 %% 所有权流转：checkin 时调用方 set_owner 给池；checkout 时池 set_owner 给调用方。
 %% 连接以 retry => 0 打开，对端关闭空闲连接后 gun 进程退出，池通过 monitor 清理。
+%%
+%% 池进程不调用 gun 的同步接口（T29）：主机键由调用方随 checkin 传入；超出空闲上限 / 过期的连接
+%% 交给临时进程 gun:close（经 gun_conns_sup 同步终止），不拖住 checkout。
+%% 每个主机的空闲上限为运行参数 upstream_pool_idle_max；checkout 结果计入
+%% litegate_upstream_connections_total{result = reused | new}（复用率在 Prometheus 侧计算）。
 -module(lg_http_pool).
 -behaviour(gen_server).
 
--export([start_link/0, checkout/1, checkout_fresh/1, checkin/1, discard/1, stats/0]).
+-export([start_link/0, checkout/1, checkout_fresh/1, checkin/2, discard/1, stats/0, conn_opts/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--define(MAX_IDLE_PER_HOST, 32).
 -define(IDLE_TIMEOUT, 60000).
 -define(SWEEP_INTERVAL, 15000).
+-define(HANDOFF_TIMEOUT, 5000).   %% checkin / discard 时与 gun 进程同步的等待上限
 
 -type host_key() :: {tcp | tls, string(), inet:port_number()}.
 
@@ -40,8 +45,8 @@ checkout(Url) ->
     case host_key(Url) of
         {ok, Key} ->
             case gen_server:call(?MODULE, {checkout, Key, self()}) of
-                {ok, Conn} -> {ok, Conn, true};
-                empty -> open_fresh(Key)
+                {ok, Conn} -> counted({ok, Conn, true});
+                empty -> counted(open_fresh(Key))
             end;
         {error, _} = Err ->
             Err
@@ -51,25 +56,44 @@ checkout(Url) ->
 -spec checkout_fresh(binary()) -> {ok, pid(), false} | {error, term()}.
 checkout_fresh(Url) ->
     case host_key(Url) of
-        {ok, Key} -> open_fresh(Key);
+        {ok, Key} -> counted(open_fresh(Key));
         {error, _} = Err -> Err
     end.
 
-%% @doc 归还连接（请求已完整结束时调用）。
--spec checkin(pid()) -> ok.
-checkin(Conn) ->
-    case whereis(?MODULE) of
-        undefined ->
-            gun:close(Conn);
-        Pool ->
+%% @doc 归还连接（请求已完整结束时由调用方调用；Url 为本次请求的地址，用于算主机键）。
+%%
+%% set_owner 是异步 cast：随后与 gun 进程做一次同步往返（sys:get_state），往返返回时
+%% 交接前它发给本进程的消息都已到达。往返失败说明连接已断（retry => 0 时 gun 发出 gun_down 后
+%% 即退出，如上游回 connection: close），此时按 discard 清掉这些消息、不归还，
+%% 免得 gun_down 残留在 lg_otlp、lg_notify 等长生命周期进程的邮箱里。
+-spec checkin(pid(), binary()) -> ok.
+checkin(Conn, Url) ->
+    case {whereis(?MODULE), host_key(Url)} of
+        {Pool, {ok, Key}} when is_pid(Pool) ->
             ok = gun:set_owner(Conn, Pool),
-            gen_server:cast(Pool, {checkin, Conn})
+            try sys:get_state(Conn, ?HANDOFF_TIMEOUT) of
+                _ -> gen_server:cast(Pool, {checkin, Key, Conn})
+            catch
+                exit:_ -> discard(Conn)
+            end;
+        _ ->
+            discard(Conn)
     end.
 
-%% @doc 丢弃连接（请求中途失败或流未读完时调用）。
+%% @doc 丢弃连接（请求中途失败或流未读完时调用），并清掉该连接发给本进程的全部消息。
+%%
+%% 先关再清：monitor 的 'DOWN' 排在 gun 进程发给本进程的所有消息之后，等到它再按连接 flush，
+%% 关闭前后迟到的 gun_response / gun_data / gun_error / gun_down 都不会残留在调用方邮箱。
 -spec discard(pid()) -> ok.
 discard(Conn) ->
-    gun:close(Conn).
+    MRef = monitor(process, Conn),
+    _ = gun:close(Conn),
+    receive
+        {'DOWN', MRef, process, Conn, _} -> ok
+    after ?HANDOFF_TIMEOUT ->
+        demonitor(MRef, [flush])
+    end,
+    gun:flush(Conn).
 
 -spec stats() -> #{host_key() => non_neg_integer()}.
 stats() ->
@@ -99,22 +123,16 @@ handle_call({checkout, Key, Caller}, _From, #state{idle = Idle} = S) ->
 handle_call(stats, _From, #state{idle = Idle} = S) ->
     {reply, maps:map(fun(_, L) -> length(L) end, Idle), S}.
 
-handle_cast({checkin, Conn}, #state{idle = Idle, mons = Mons} = S) ->
-    case gun_host_key(Conn) of
-        {ok, Key} ->
-            List = maps:get(Key, Idle, []),
-            case length(List) >= ?MAX_IDLE_PER_HOST of
-                true ->
-                    gun:close(Conn),
-                    {noreply, S};
-                false ->
-                    Ref = monitor(process, Conn),
-                    {noreply, S#state{idle = Idle#{Key => [{Conn, now_ms()} | List]},
-                                      mons = Mons#{Conn => {Key, Ref}}}}
-            end;
-        error ->
-            gun:close(Conn),
-            {noreply, S}
+handle_cast({checkin, Key, Conn}, #state{idle = Idle, mons = Mons} = S) ->
+    List = maps:get(Key, Idle, []),
+    case length(List) >= lg_config:get(upstream_pool_idle_max) of
+        true ->
+            close_async(Conn),
+            {noreply, S};
+        false ->
+            Ref = monitor(process, Conn),
+            {noreply, S#state{idle = Idle#{Key => [{Conn, now_ms()} | List]},
+                              mons = Mons#{Conn => {Key, Ref}}}}
     end.
 
 handle_info({'DOWN', _Ref, process, Conn, _Reason}, S) ->
@@ -122,12 +140,23 @@ handle_info({'DOWN', _Ref, process, Conn, _Reason}, S) ->
 handle_info(sweep, #state{idle = Idle} = S) ->
     Deadline = now_ms() - ?IDLE_TIMEOUT,
     Expired = [C || {_, L} <- maps:to_list(Idle), {C, T} <- L, T < Deadline],
-    S1 = lists:foldl(fun(C, Acc) -> gun:close(C), remove(C, Acc) end, S, Expired),
+    S1 = lists:foldl(fun(C, Acc) -> close_async(C), remove(C, Acc) end, S, Expired),
     erlang:send_after(?SWEEP_INTERVAL, self(), sweep),
     {noreply, S1};
 handle_info(_Msg, S) ->
     %% 空闲连接的 gun_up / gun_down / gun_error 发给 owner（池），无需处理
     {noreply, S}.
+
+%% 池进程持有的连接（空闲、无流）直接终止即可，池邮箱里的迟到消息由 handle_info 兜底丢弃
+close_async(Conn) ->
+    _ = spawn(gun, close, [Conn]),
+    ok.
+
+counted({ok, _, Reused} = Ok) ->
+    lg_metrics:inc(litegate_upstream_connections_total, [{result, case Reused of true -> reused; false -> new end}]),
+    Ok;
+counted(Err) ->
+    Err.
 
 %%====================================================================
 %% 内部函数
@@ -147,15 +176,17 @@ open_fresh(Host, Port, Opts) ->
                 {ok, _Proto} ->
                     {ok, Conn, false};
                 {error, Reason} ->
-                    gun:close(Conn),
+                    discard(Conn),
                     {error, {connect_failed, Reason}}
             end;
         {error, Reason} ->
             {error, {connect_failed, Reason}}
     end.
 
+%% @doc gun:open 选项（HTTP/1.1；TLS 时校验证书与主机名并带 SNI）。realtime 的 WebSocket 连接同样使用。
 %% 系统没有 CA 证书时 public_key:cacerts_get/0 会崩溃（OTP 28 conv_error_reason 的 function_clause），
 %% 转成连接失败，避免把调用方进程一起带崩；明文 http 不需要证书
+-spec conn_opts(tcp | tls, string()) -> {ok, map()} | {error, term()}.
 conn_opts(Transport, Host) ->
     Base = #{transport => Transport,
              protocols => [http],
@@ -188,19 +219,6 @@ host_key(Url) ->
         _ ->
             {error, {bad_url, Url}}
     end.
-
-gun_host_key(Conn) ->
-    try gun:info(Conn) of
-        #{transport := T, origin_host := H, origin_port := P} ->
-            {ok, {T, to_list(H), P}}
-    catch
-        exit:_ -> error
-    end.
-
-%% gun 的 origin_host 为 inet:hostname() | inet:ip_address()
-to_list(H) when is_list(H) -> H;
-to_list(H) when is_atom(H) -> atom_to_list(H);
-to_list(H) -> inet:ntoa(H).
 
 forget(Conn, #state{mons = Mons} = S) ->
     case maps:take(Conn, Mons) of

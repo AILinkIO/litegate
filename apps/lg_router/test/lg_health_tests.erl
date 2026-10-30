@@ -15,7 +15,9 @@ health_test_() ->
              lg_core_test_util:stop(Dir)
      end,
      [?_test(window_stats()),
-      ?_test(probe_unreachable())]}.
+      ?_test(probe_unreachable()),
+      ?_test(last_sweep()),
+      ?_test(live_last_sweep())]}.
 
 cred(Url) ->
     {ok, #lg_credential{id = Id}} =
@@ -52,3 +54,23 @@ probe_unreachable() ->
     C = cred(iolist_to_binary(["http://127.0.0.1:", integer_to_list(Port), "/v1"])),
     [P] = [P || #{credential := Id} = P <- lg_health:probe_now([C]), Id =:= C],
     ?assertMatch(#{result := network}, P).
+
+%% T32：最近结果表 24h 无更新的条目随周期清扫删除
+last_sweep() ->
+    Now = lg_time:now_ms(),
+    ok = lg_health:record({<<"c">>, <<"fresh">>}, ok, 10, undefined),
+    true = ets:insert(lg_health_last, {{{<<"c">>, <<"stale">>}, error}, Now - 25 * 3600000, server, <<"old">>}),
+    lg_health ! sweep,
+    _ = sys:get_state(lg_health),
+    ?assertEqual([], ets:lookup(lg_health_last, {{<<"c">>, <<"stale">>}, error})),
+    ?assertMatch([_], ets:lookup(lg_health_last, {{<<"c">>, <<"fresh">>}, ok})).
+
+%% T32：lg_live 每条路由最近一次叙述 24h 无更新的随周期清扫删除
+live_last_sweep() ->
+    Now = lg_time:now_ms(),
+    ok = lg_live:request_end(<<"req-1">>, #{route => <<"fresh">>, status => 200, narrative => [<<"n">>]}),
+    true = ets:insert(lg_live_stats, {{last, <<"stale">>}, [<<"old">>], Now - 25 * 3600000}),
+    lg_live ! prune,
+    _ = sys:get_state(lg_live),
+    ?assertEqual([], ets:lookup(lg_live_stats, {last, <<"stale">>})),
+    ?assertMatch([_], ets:lookup(lg_live_stats, {last, <<"fresh">>})).

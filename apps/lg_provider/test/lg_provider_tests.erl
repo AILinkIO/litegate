@@ -34,7 +34,14 @@ provider_test_() ->
               ?_test(responses_converted(Port)),
               ?_test(responses_passthrough(Port)),
              ?_test(count_tokens(Port)),
-             ?_test(exit_signal_case(Port))]
+             ?_test(exit_signal_case(Port)),
+             ?_test(stream_idle_timeout(Port)),
+             ?_test(stream_max_duration(Port)),
+             ?_test(sse_event_cap(Port)),
+             ?_test(single_decode(Port)),
+             ?_test(rewrite_replay(Port)),
+             ?_test(body_total_deadline(Port)),
+             {timeout, 60, ?_test(body_size_cap(Port))}]
      end}.
 
 cred(Port, openai) ->
@@ -413,3 +420,194 @@ exit_signal_case(Port) ->
     Res = receive {res, R} -> R after 2000 -> timeout end,
     ?assertMatch({exit, shutdown, #{text := <<"a">>}}, Res),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 1000).
+
+%%--------------------------------------------------------------------
+%% T25：流式超时分级与上游响应体上限
+
+delta_frame(Text) ->
+    iolist_to_binary(lg_sse:encode(json:encode(
+      #{<<"choices">> => [#{<<"index">> => 0, <<"delta">> => #{<<"content">> => Text}}]}))).
+
+timeouts(Phase) ->
+    #{counters := Cs} = lg_metrics:snapshot(),
+    lists:sum([N || {litegate_upstream_timeouts_total, [{phase, P}], N} <- Cs, P =:= atom_to_binary(Phase)]).
+
+with_config(KVs, Fun) ->
+    [ok = lg_config:set(K, V) || {K, V} <- KVs],
+    try Fun() after [ok = lg_config:unset(K) || {K, _} <- KVs] end.
+
+%% 首包后上游停发：按 stream_idle_timeout_ms 结束（phase=idle），不等 upstream_timeout_ms
+stream_idle_timeout(Port) ->
+    with_config([{stream_idle_timeout_ms, 200}], fun() ->
+        lg_mock_upstream:expect({sse_slow, [delta_frame(<<"a">>), delta_frame(<<"b">>)], 1500}),
+        Before = timeouts(idle),
+        T0 = lg_time:now_ms(),
+        {ok, S} = lg_provider:stream_open(openai, (chat_req())#{<<"stream">> => true}, target(Port, openai)),
+        {Out, Result} = collect(S),
+        ?assert(lg_time:now_ms() - T0 < 1200),
+        ?assertMatch(#{text := <<"a">>, error := #{<<"kind">> := timeout}}, Result),
+        ?assertMatch({_, _}, binary:match(Out, <<"idle timeout">>)),
+        ?assertEqual(Before + 1, timeouts(idle))
+    end).
+
+%% 上游只发 ping：ping 刷新空闲计时，但开流超过 stream_max_ms 时结束（phase=total）
+stream_max_duration(Port) ->
+    with_config([{stream_idle_timeout_ms, 300}, {stream_max_ms, 600}], fun() ->
+        lg_mock_upstream:expect({sse_slow, lists:duplicate(40, <<": ping\n\n">>), 50}),
+        Before = timeouts(total),
+        T0 = lg_time:now_ms(),
+        {ok, S} = lg_provider:stream_open(openai, (chat_req())#{<<"stream">> => true}, target(Port, openai)),
+        {_Out, Result} = collect(S),
+        Took = lg_time:now_ms() - T0,
+        ?assert(Took >= 550 andalso Took < 1500),
+        ?assertMatch(#{error := #{<<"kind">> := timeout}}, Result),
+        ?assertEqual(Before + 1, timeouts(total))
+    end).
+
+%% 未结束的 SSE 事件超过 sse_max_event_bytes：已解析的内容照常输出，随后以错误帧结束
+sse_event_cap(Port) ->
+    with_config([{sse_max_event_bytes, 1000}], fun() ->
+        Big = <<"data: {\"x\":\"", (binary:copy(<<"x">>, 800))/binary>>,
+        lg_mock_upstream:expect({sse_slow, [delta_frame(<<"a">>), Big, binary:copy(<<"y">>, 800), <<"\"}\n\n">>], 50}),
+        Before = timeouts(too_large),
+        {ok, S} = lg_provider:stream_open(openai, (chat_req())#{<<"stream">> => true}, target(Port, openai)),
+        {Out, Result} = collect(S),
+        ?assertMatch(#{text := <<"a">>, error := #{<<"kind">> := server}}, Result),
+        ?assertMatch({_, _}, binary:match(Out, <<"too large">>)),
+        ?assertEqual(Before + 1, timeouts(too_large))
+    end).
+
+%% 非流式读体按总截止计时：上游慢速滴数据（每块都在单条超时内）也会超时
+body_total_deadline(Port) ->
+    lg_mock_upstream:expect({sse_slow, lists:duplicate(10, delta_frame(<<"a">>)), 100}),
+    Before = timeouts(total),
+    ?assertEqual({error, {timeout, total}},
+                 lg_http:request(<<"POST">>, url(Port, "/openai/v1/chat/completions"), [], <<"{}">>, 400)),
+    ?assertEqual(Before + 1, timeouts(total)),
+    ?assertMatch(#{kind := timeout, status := 504, retryable := true},
+                 lg_llm_error:classify({timeout, total})).
+
+%% 100MB 非流式响应：64MB（默认上限）处中止，读取进程内存峰值有界
+body_size_cap(Port) ->
+    lg_mock_upstream:expect({chunked, 200, <<"application/json">>, binary:copy(<<"x">>, 1024 * 1024), 100}),
+    Before = timeouts(too_large),
+    Parent = self(),
+    Pid = spawn(fun() ->
+                        receive go -> ok end,
+                        Parent ! {res, lg_http:request(<<"POST">>, url(Port, "/openai/v1/chat/completions"),
+                                                       [], <<"{}">>, 30000, #{api => true})}
+                end),
+    Sampler = spawn(fun() -> sample(Pid, 0, Parent) end),
+    Pid ! go,
+    Res = receive {res, R} -> R after 30000 -> timeout end,
+    Sampler ! stop,
+    Peak = receive {peak, P} -> P after 5000 -> undefined end,
+    ?assertEqual({error, {too_large, 64 * 1024 * 1024}}, Res),
+    %% 下限确认采样确实观测到了累积（实测峰值约 65MB）
+    ?assert(Peak > 32 * 1024 * 1024),
+    ?assert(Peak < 80 * 1024 * 1024),
+    ?assertEqual(Before + 1, timeouts(too_large)),
+    ?assertMatch(#{kind := server, status := 502, retryable := false},
+                 lg_llm_error:classify({too_large, 64 * 1024 * 1024})).
+
+%% 采样进程内存（堆 + 引用的 off-heap 二进制），取峰值
+sample(Pid, Peak, Parent) ->
+    Mem = case erlang:process_info(Pid, [memory, binary]) of
+              [{memory, M}, {binary, Bins}] -> M + lists:sum([Sz || {_, Sz, _} <- Bins]);
+              undefined -> 0
+          end,
+    receive stop -> Parent ! {peak, max(Peak, Mem)}
+    after 1 -> sample(Pid, max(Peak, Mem), Parent)
+    end.
+
+%% 每个上游事件只 json:decode 一次：Responses 转换 + 结构化输出（强制工具）/ think 拆分
+%% （改动前 think / 结构化 / lg_stream / 第二级各解码一次，每事件最多 4 次）
+single_decode(Port) ->
+    Ev = fun(T, M) -> iolist_to_binary(lg_sse:encode(T, json:encode(M#{<<"type">> => T}))) end,
+    Decodes = fun(Expect, Req, Target) ->
+                      lg_mock_upstream:expect({sse, Expect}),
+                      {ok, S} = lg_provider:stream_open(responses, Req, Target),
+                      meck:reset(json),
+                      {Sse, Result} = collect(S),
+                      {meck:num_calls(json, decode, '_', self()), Sse, Result}
+              end,
+    meck:new(json, [passthrough, unstick, no_link]),
+    try
+        %% Anthropic 上游 + 结构化输出（强制工具方式）
+        Req = #{<<"model">> => <<"pub">>, <<"input">> => <<"ping">>, <<"stream">> => true,
+                <<"text">> => #{<<"format">> => #{<<"type">> => <<"json_schema">>, <<"name">> => <<"out">>,
+                                                  <<"schema">> => #{<<"type">> => <<"object">>}}}},
+        AnEvents = [Ev(<<"message_start">>, #{<<"message">> => #{<<"id">> => <<"m1">>, <<"model">> => <<"claude">>,
+                                                                 <<"usage">> => #{<<"input_tokens">> => 7}}}),
+                    Ev(<<"content_block_start">>, #{<<"index">> => 0, <<"content_block">> => #{<<"type">> => <<"tool_use">>,
+                                                                                             <<"id">> => <<"t1">>, <<"name">> => <<"out">>}}),
+                    Ev(<<"content_block_delta">>, #{<<"index">> => 0, <<"delta">> => #{<<"type">> => <<"input_json_delta">>,
+                                                                                      <<"partial_json">> => <<"{\"a\":">>}}),
+                    Ev(<<"content_block_delta">>, #{<<"index">> => 0, <<"delta">> => #{<<"type">> => <<"input_json_delta">>,
+                                                                                      <<"partial_json">> => <<"1}">>}}),
+                    Ev(<<"content_block_stop">>, #{<<"index">> => 0}),
+                    Ev(<<"message_delta">>, #{<<"delta">> => #{<<"stop_reason">> => <<"tool_use">>}, <<"usage">> => #{<<"output_tokens">> => 2}}),
+                    Ev(<<"message_stop">>, #{})],
+        {N1, _, R1} = Decodes(AnEvents, Req, target(Port, anthropic)),
+        ?assertEqual(length(AnEvents), N1),
+        ?assertMatch(#{text := <<"{\"a\":1}">>,
+                       response := #{<<"status">> := <<"completed">>,
+                                     <<"output">> := [#{<<"content">> := [#{<<"text">> := <<"{\"a\":1}">>}]}]}}, R1),
+        %% OpenAI 上游 + think 拆分
+        Chunk = fun(D, F) -> iolist_to_binary(lg_sse:encode(json:encode(
+                                #{<<"id">> => <<"c">>, <<"model">> => <<"up">>,
+                                  <<"choices">> => [#{<<"index">> => 0, <<"delta">> => D, <<"finish_reason">> => F}]}))) end,
+        OaEvents = [Chunk(#{<<"content">> => <<"<think>r</th">>}, null),
+                    Chunk(#{<<"content">> => <<"ink>\n\nhi">>}, null),
+                    Chunk(#{}, <<"stop">>)],
+        T = target(Port, openai),
+        Think = T#{credential => (maps:get(credential, T))#lg_credential{options = #{think_tags => <<"split">>}}},
+        {N2, Sse2, R2} = Decodes(OaEvents ++ [lg_sse:done()], maps:remove(<<"text">>, Req), Think),
+        ?assertEqual(length(OaEvents), N2),
+        ?assertMatch(#{text := <<"hi">>, response := #{<<"output">> := [#{<<"type">> := <<"reasoning">>},
+                                                                         #{<<"type">> := <<"message">>}]}}, R2),
+        ?assertMatch({_, _}, binary:match(Sse2, <<"response.reasoning_text.delta">>))
+    after
+        meck:unload(json)
+    end.
+
+%% 同协议透传时被改写的事件（think 拆分、结构化输出）按改写后的 map 重新编码，与改动前逐级改写 raw 的字节一致
+rewrite_replay(Port) ->
+    %% OpenAI → OpenAI + think 拆分：data-only 帧
+    Chunks = [#{<<"id">> => <<"c">>, <<"model">> => <<"up">>,
+                <<"choices">> => [#{<<"index">> => 0, <<"delta">> => #{<<"content">> => C}, <<"finish_reason">> => F}]}
+              || {C, F} <- [{<<"<think>pl">>, null}, {<<"an</think>\n\nAns">>, null}, {<<"wer">>, <<"stop">>}]],
+    Frames = [iolist_to_binary(lg_sse:encode(json:encode(C))) || C <- Chunks],
+    {Split, _} = lists:mapfoldl(fun lg_think:feed_chunk/2, lg_think:new(), Chunks),
+    Expect = iolist_to_binary([[lg_sse:encode(json:encode(J)) || J <- Split], lg_sse:done()]),
+    lg_mock_upstream:expect({sse, Frames ++ [lg_sse:done()]}),
+    T = target(Port, openai),
+    Think = T#{credential => (maps:get(credential, T))#lg_credential{options = #{think_tags => <<"split">>}}},
+    {ok, S} = lg_provider:stream_open(openai, (chat_req())#{<<"stream">> => true}, Think),
+    {Out, _} = collect(S),
+    ?assertEqual(Expect, Out),
+    %% Anthropic → Anthropic + 结构化输出：改写的事件保留事件名
+    Ev = fun(Ty, M) -> iolist_to_binary(lg_sse:encode(Ty, json:encode(M#{<<"type">> => Ty}))) end,
+    Start = #{<<"message">> => #{<<"id">> => <<"m1">>, <<"model">> => <<"claude">>, <<"usage">> => #{<<"input_tokens">> => 7}}},
+    Up = [Ev(<<"message_start">>, Start),
+          Ev(<<"content_block_start">>, #{<<"index">> => 0, <<"content_block">> => #{<<"type">> => <<"tool_use">>, <<"id">> => <<"t1">>,
+                                                                                   <<"name">> => <<"out">>, <<"input">> => #{}}}),
+          Ev(<<"content_block_delta">>, #{<<"index">> => 0, <<"delta">> => #{<<"type">> => <<"input_json_delta">>, <<"partial_json">> => <<"{}">>}}),
+          Ev(<<"content_block_stop">>, #{<<"index">> => 0}),
+          Ev(<<"message_delta">>, #{<<"delta">> => #{<<"stop_reason">> => <<"tool_use">>}, <<"usage">> => #{<<"output_tokens">> => 2}}),
+          Ev(<<"message_stop">>, #{})],
+    Expect2 = iolist_to_binary(
+                [Ev(<<"message_start">>, Start),
+                 Ev(<<"content_block_start">>, #{<<"index">> => 0, <<"content_block">> => #{<<"type">> => <<"text">>, <<"text">> => <<>>}}),
+                 Ev(<<"content_block_delta">>, #{<<"index">> => 0, <<"delta">> => #{<<"type">> => <<"text_delta">>, <<"text">> => <<"{}">>}}),
+                 Ev(<<"content_block_stop">>, #{<<"index">> => 0}),
+                 Ev(<<"message_delta">>, #{<<"delta">> => #{<<"stop_reason">> => <<"end_turn">>}, <<"usage">> => #{<<"output_tokens">> => 2}}),
+                 Ev(<<"message_stop">>, #{})]),
+    lg_mock_upstream:expect({sse, Up}),
+    AReq = #{<<"model">> => <<"pub">>, <<"max_tokens">> => 10, <<"stream">> => true,
+             <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"ping">>}],
+             <<"output_config">> => #{<<"format">> => #{<<"type">> => <<"json_schema">>, <<"name">> => <<"out">>,
+                                                        <<"schema">> => #{<<"type">> => <<"object">>}}}},
+    {ok, S2} = lg_provider:stream_open(anthropic, AReq, target(Port, anthropic)),
+    {Out2, _} = collect(S2),
+    ?assertEqual(Expect2, Out2).

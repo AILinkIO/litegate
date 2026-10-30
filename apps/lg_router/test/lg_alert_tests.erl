@@ -23,7 +23,10 @@ alert_test_() ->
               ?_test(plan_quota(Port)),
               ?_test(catalog(Port)),
               ?_test(login_brute_force(Port)),
-              ?_test(test_channel(Port))]
+              ?_test(test_channel(Port)),
+              ?_test(rules_cache(Port)),
+              ?_test(upstream_flap(Port)),
+              {timeout, 30, ?_test(sender_bounded())}]   %% 放最后：发送进程会积压到用例结束
      end}.
 
 hook(Port) -> iolist_to_binary(["http://127.0.0.1:", integer_to_list(Port), "/hook"]).
@@ -89,6 +92,7 @@ login_brute_force(Port) ->
 
 upstream_down(Port) ->
     reset(),
+    ok = lg_config:set(alert_recover_ms, 0),      %% 第一次成功即恢复
     Ch = channel(Port),
     rule(<<"upstream_down">>, 2, Ch),
     {ok, #lg_credential{id = C}} = lg_credentials:create(#{<<"name">> => <<"up">>, <<"protocol">> => <<"openai">>,
@@ -108,7 +112,8 @@ upstream_down(Port) ->
     %% 通知记录带发送结果
     timer:sleep(100),
     [#{event := upstream_down, level := info, deliveries := [#{status := ok}]}, #{level := critical} | _] =
-        lg_alert:history(10).
+        lg_alert:history(10),
+    ok = lg_config:unset(alert_recover_ms).
 
 budget(Port) ->
     reset(),
@@ -161,3 +166,77 @@ test_channel(Port) ->
     lg_mock_upstream:expect({json, 500, #{}, <<"down">>}),
     ?assertEqual({error, <<"HTTP 500: down">>}, lg_alert:test_channel(Ch)),
     ?assertEqual({error, not_found}, lg_alert:test_channel(<<"nope">>)).
+
+%% T27：规则缓存随规则增删改刷新；没有启用规则的事件不投递
+rules_cache(Port) ->
+    reset(),
+    ?assertNot(lg_alerts:has_rules(budget)),
+    Ch = channel(Port),
+    Id = rule(<<"budget">>, 50, Ch),
+    ?assert(lg_alerts:has_rules(budget)),
+    ?assertMatch([#lg_alert_rule{id = Id, threshold = 50}], lg_alerts:rules(budget)),
+    {ok, _} = lg_alerts:update_rule(Id, #{<<"threshold">> => 70}),
+    ?assertMatch([#lg_alert_rule{threshold = 70}], lg_alerts:rules(budget)),
+    {ok, _} = lg_alerts:update_rule(Id, #{<<"enabled">> => false}),
+    ?assertNot(lg_alerts:has_rules(budget)),
+    {ok, _} = lg_alerts:update_rule(Id, #{<<"enabled">> => true}),
+    ok = lg_alerts:delete_channel(Ch),
+    ?assertMatch([#lg_alert_rule{channels = []}], lg_alerts:rules(budget)),
+    ok = lg_alerts:delete_rule(Id),
+    ?assertEqual([], lg_alerts:rules(budget)),
+    ?assertNot(lg_alerts:has_rules(budget)).
+
+%% T27：目标故障 / 恢复反复抖动只产生一对告警 / 恢复（恢复需持续健康 alert_recover_ms）；
+%% 恢复后静默期内再次故障不再通知
+upstream_flap(Port) ->
+    reset(),
+    ok = lg_config:set(alert_recover_ms, 300),
+    Ch = channel(Port),
+    rule(<<"upstream_down">>, 2, Ch),
+    {ok, #lg_credential{id = C}} = lg_credentials:create(#{<<"name">> => <<"flap">>, <<"protocol">> => <<"openai">>,
+                                                           <<"base_url">> => <<"https://x.test/v1">>}),
+    T = {C, <<"m">>},
+    expect(2),
+    [begin
+         ok = lg_health:record(T, server, 10, <<"boom">>),
+         ok = lg_health:record(T, server, 10, <<"boom">>),
+         ok = lg_health:record(T, ok, 10, undefined)
+     end || _ <- lists:seq(1, 10)],
+    timer:sleep(500),
+    [Down, Up] = hooks(2),
+    ?assertMatch(#{<<"title">> := <<"上游故障：flap / m"/utf8>>}, Down),
+    ?assertMatch(#{<<"title">> := <<"上游已恢复：flap / m"/utf8>>}, Up),
+    %% 静默期（默认 30 分钟）内再次故障并恢复：不通知
+    ok = lg_health:record(T, server, 10, <<"boom">>),
+    ok = lg_health:record(T, server, 10, <<"boom">>),
+    ok = lg_health:record(T, ok, 10, undefined),
+    timer:sleep(500),
+    ok = lg_alert:flush(),
+    ?assertEqual(2, length([B || #{path := <<"/hook">>, body := B} <- lg_mock_upstream:requests()])),
+    ok = lg_config:unset(alert_recover_ms).
+
+%% T27：渠道不可达时发送进程逐条重试积压，邮箱不超过 1000 条，多出的记为 dropped 并计数
+sender_bounded() ->
+    reset(),
+    {ok, #lg_channel{id = Ch}} = lg_alerts:create_channel(#{<<"name">> => <<"dead">>, <<"type">> => <<"webhook">>,
+                                                            <<"url">> => <<"http://127.0.0.1:1/hook">>}),
+    rule(<<"login_brute_force">>, 3, Ch),
+    Dropped = fun() -> case ets:lookup(lg_metrics, {litegate_alert_dropped_total, []}) of
+                           [{_, N}] -> N;
+                           [] -> 0
+                       end
+              end,
+    D0 = Dropped(),
+    #{level := Level} = logger:get_primary_config(),
+    ok = logger:set_primary_config(level, error),
+    try
+        [ok = lg_alert:login_brute_force(<<"u">>, {192, 0, 2, 1}, 3) || _ <- lists:seq(1, 1200)],
+        _ = sys:get_state(lg_alert),          %% 等事件处理完
+        Sender = element(tuple_size(sys:get_state(lg_alert)), sys:get_state(lg_alert)),
+        {message_queue_len, Len} = erlang:process_info(Sender, message_queue_len),
+        ?assert(Len =< 1000),
+        ?assert(Dropped() - D0 >= 199),
+        ?assertMatch([#{deliveries := [#{status := dropped}]} | _], lg_alert:history(1))
+    after
+        logger:set_primary_config(level, Level)
+    end.

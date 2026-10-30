@@ -51,7 +51,21 @@ defs() ->
       litegate_otlp_stripped_total =>
           {counter, <<"Spans stripped of body content by the OTLP exporter (queue above 50% byte cap)">>, #{}},
       litegate_out_throttled_total =>
-          {counter, <<"Requests throttled by the adaptive outbound rate limiter">>, #{}}}.
+          {counter, <<"Requests throttled by the adaptive outbound rate limiter">>, #{}},
+      litegate_store_degraded_total =>
+          {counter, <<"Store writes degraded under backlog (level: soft drops messages, search docs and cache; hard keeps usage only; index drops search batches)">>, #{}},
+      litegate_store_write_errors_total =>
+          {counter, <<"Store batch write errors by cask">>, #{}},
+      litegate_upstream_timeouts_total =>
+          {counter, <<"Upstream timeouts and size limits by phase (first_byte, idle, total, too_large)">>, #{}},
+      litegate_client_closed_total =>
+          {counter, <<"Requests ended because the client disconnected before completion">>, #{}},
+      litegate_classifier_skipped_total =>
+          {counter, <<"Intent classification skipped because the classifier circuit breaker is open">>, #{}},
+      litegate_upstream_connections_total =>
+          {counter, <<"Upstream connection checkouts by result (reused from pool, new)">>, #{}},
+      litegate_alert_dropped_total =>
+          {counter, <<"Alert notifications dropped because the sender queue is full">>, #{}}}.
 
 %%====================================================================
 %% API

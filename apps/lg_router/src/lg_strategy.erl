@@ -25,7 +25,7 @@ order(_, _Route, []) -> [];
 order(_, _Route, [_] = Items) -> Items;
 order(<<"order">>, _Route, Items) -> Items;
 order(<<"rotate">>, Route, Items) ->
-    Loads = lg_affinity:load(Route, 30 * 60000),
+    Loads = lg_affinity:load(Route, [tkey(T) || {T, _} <- Items]),
     N = lg_affinity:next_turn(Route),
     {A, B} = lists:split(N rem length(Items), Items),
     sort_by(fun({T, _}) -> maps:get(tkey(T), Loads, 0) end, B ++ A);
