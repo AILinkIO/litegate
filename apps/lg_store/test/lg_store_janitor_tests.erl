@@ -32,6 +32,9 @@ purge_old_logs_and_usage() ->
     Recent = [id_at(Now - ?DAY + I, 10000 + I) || I <- lists:seq(1, 3)],
     Msg = #{request => #{}, response => <<"x">>},
     [ok = lg_store:record(log(Id, <<"k-old">>), Msg) || Id <- Old],
+    %% 旧日志洪峰可能超过尽力而为的检索索引队列；本例只验证清理后的新文档，
+    %% 先等洪峰索引完，避免新文档恰好落在被丢弃的积压批次里。
+    lg_store_indexer:sync(),
     [ok = lg_store:record(log(Id, <<"k-new">>), Msg) || Id <- Recent],
     %% 很早的用量（500 天前）只能通过直接记日志的方式产生小时汇总
     ok = lg_store:record(log(id_at(Now - 500 * ?DAY, 1), <<"k-ancient">>), undefined),
@@ -40,6 +43,7 @@ purge_old_logs_and_usage() ->
     ok = lg_store:record((log(id_at(Now - 40 * ?DAY, 90002), <<"k-old">>))#{session => <<"live-s">>}, undefined),
     ok = lg_store:record((log(id_at(Now - ?DAY, 90003), <<"k-new">>))#{session => <<"live-s">>}, undefined),
     ok = lg_store:flush(),
+    lg_store_indexer:sync(),
     ?assertEqual(3, length(lg_store:usage(#{from => 0, to => Now + 1, group_by => [key_id]}))),
 
     Stats = lg_store_janitor:run(),

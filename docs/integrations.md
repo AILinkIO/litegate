@@ -50,6 +50,7 @@ wire_api = "responses"
 
 启动 Codex 前设置 `LITEGATE_API_KEY`。凭证开启 `responses_api` 时直接透传 Responses 请求；
 否则网关把它转换为 Chat Completions，并映射推理内容和工具数据。
+MiniMax 的 Responses 透传会把并行工具调用结果移到对应调用之后，并去掉没有匹配调用的孤立结果。
 
 ## opencode
 

@@ -59,6 +59,23 @@ tool_schema_test() ->
     %% 其他上游不改
     ?assertEqual(Oa, lg_quirks:apply(openai, cred(<<"https://api.minimax.cn/v1">>), <<"MiniMax-M2.7">>, Oa)).
 
+%% MiniMax Responses：并行工具调用必须每个 result 紧跟对应 call；孤立 result 会返回 2013。
+minimax_responses_tools_test() ->
+    Call = fun(Id) -> #{<<"type">> => <<"function_call">>, <<"call_id">> => Id,
+                        <<"name">> => <<"f">>, <<"arguments">> => <<"{}">>} end,
+    Output = fun(Id) -> #{<<"type">> => <<"function_call_output">>, <<"call_id">> => Id,
+                          <<"output">> => <<"ok">>} end,
+    Message = #{<<"type">> => <<"message">>, <<"role">> => <<"user">>, <<"content">> => <<"hi">>},
+    Reasoning = #{<<"type">> => <<"reasoning">>, <<"id">> => <<"rs">>, <<"summary">> => []},
+    Body = #{<<"input">> => [Message, Reasoning, Call(<<"c1">>), Call(<<"c2">>),
+                              Output(<<"c1">>), Output(<<"c2">>), Output(<<"lost">>)]},
+    Expected = [Message, Reasoning, Call(<<"c1">>), Output(<<"c1">>),
+                Call(<<"c2">>), Output(<<"c2">>)],
+    #{<<"input">> := Expected} =
+        lg_quirks:apply(openai, cred(<<"https://api.minimax.cn/v1">>), <<"MiniMax-M2.7">>, Body),
+    %% 其他 Responses 上游保持 OpenAI 兼容排序
+    ?assertEqual(Body, lg_quirks:apply(openai, cred(<<"https://api.openai.com/v1">>), <<"gpt">>, Body)).
+
 %% 智谱 GLM 忽略 json_schema：改为 json_object，schema 写进系统提示
 zhipu_json_schema_test() ->
     RF = #{<<"type">> => <<"json_schema">>, <<"json_schema">> => #{<<"name">> => <<"c">>, <<"schema">> => #{<<"type">> => <<"object">>}}},

@@ -17,6 +17,10 @@
 %%         → 按枚举值补上 type（参考 magpie 的 kimiToolEnumTypes）
 %%   DeepSeek：pattern 里的 \0 被拒「is not a 'regex'」→ 改写为 \u0000（参考 magpie 的 deepseekToolPatterns）
 %%
+%% MiniMax（主机或模型名含 minimax，OpenAI Responses）：并行工具调用的 OpenAI 排序是先列出全部 call，再列出全部 output；
+%% MiniMax 要求 result 紧跟对应 call（实测 2013「tool call result does not follow tool call」）
+%%   → 把 output 移到对应 call 后面；没有匹配 call 的 result 直接去掉。
+%%
 %% 智谱 GLM（open.bigmodel.cn、api.z.ai 或 glm 模型，OpenAI 协议）：response_format 的 json_schema 被静默忽略，回复是
 %% ```json 代码块（实测，2026-10-13）；json_object 则返回纯 JSON → 改为 json_object，并把 schema 写进系统提示
 -module(lg_quirks).
@@ -45,9 +49,13 @@ apply(Up, #lg_credential{base_url = Base}, Model, Body0) ->
                 true -> map_tool_schemas(fun deepseek_patterns/1, Body2);
                 false -> Body2
             end,
+    Body4 = case Up =:= openai andalso minimax(Base, Model) of
+                true -> minimax_responses(Body3);
+                false -> Body3
+            end,
     case Up =:= openai andalso zhipu(Base, Model) of
-        true -> zhipu_json_schema(Body3);
-        false -> Body3
+        true -> zhipu_json_schema(Body4);
+        false -> Body4
     end.
 
 zhipu(Base, Model) ->
@@ -79,6 +87,53 @@ kimi(Base, Model) ->
            end,
     lists:member(Host, [<<"api.moonshot.ai">>, <<"api.moonshot.cn">>, <<"api.kimi.com">>, <<"api.kimi.ai">>])
         orelse (is_binary(Model) andalso re:run(string:lowercase(Model), "^(kimi|k3|moonshot)") =/= nomatch).
+
+%% MiniMax Responses 对并行工具调用的排序要求比 OpenAI 更严格。
+minimax(Base, Model) ->
+    Has = fun(B) -> is_binary(B) andalso binary:match(string:lowercase(B), <<"minimax">>) =/= nomatch end,
+    Host = case catch uri_string:parse(Base) of
+               #{host := H} -> H;
+               _ -> <<>>
+           end,
+    Has(Host) orelse Has(Model).
+
+minimax_responses(#{<<"input">> := Items} = Body) when is_list(Items) ->
+    case lists:any(fun is_tool_output/1, Items) of
+        false -> Body;
+        true ->
+            Outputs = tool_outputs(Items),
+            {Ordered, _} = lists:foldl(fun minimax_item/2, {[], Outputs}, Items),
+            Body#{<<"input">> => lists:reverse(Ordered)}
+    end;
+minimax_responses(Body) ->
+    Body.
+
+minimax_item(#{<<"type">> := T, <<"call_id">> := Id} = Call, {Acc, Outputs})
+  when T =:= <<"function_call">>; T =:= <<"custom_tool_call">> ->
+    {Outs, Outputs1} = case maps:take(Id, Outputs) of
+                           {V, M} -> {V, M};
+                           error -> {[], Outputs}
+                       end,
+    {lists:reverse([Call | Outs], Acc), Outputs1};
+%% 不匹配的 result 无法在 MiniMax 表示；保留只会触发 2013。
+minimax_item(Item, {Acc, Outputs}) ->
+    case is_tool_output(Item) of
+        true -> {Acc, Outputs};
+        false -> {[Item | Acc], Outputs}
+    end.
+
+tool_outputs(Items) ->
+    lists:foldl(fun
+                    (#{<<"type">> := T, <<"call_id">> := Id} = O, M) when T =:= <<"function_call_output">>;
+                                                                         T =:= <<"custom_tool_call_output">> ->
+                        maps:update_with(Id, fun(L) -> L ++ [O] end, [O], M);
+                    (_, M) -> M
+                end, #{}, Items).
+
+is_tool_output(#{<<"type">> := T}) ->
+    lists:member(T, [<<"function_call_output">>, <<"custom_tool_call_output">>]);
+is_tool_output(_) ->
+    false.
 
 %% 对请求里每个工具的参数 schema 应用 F（OpenAI tools[].function.parameters、Anthropic tools[].input_schema）
 map_tool_schemas(F, #{<<"tools">> := Tools} = Body) when is_list(Tools) ->

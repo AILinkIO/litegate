@@ -1,7 +1,7 @@
 {"1.2.0",
 [{<<"bitcask">>,
   {git,"https://github.com/DavidAlphaFox/bitcask.git",
-       {ref,"d816aff0b60113c340a70d5732775690dcfb0c50"}},
+       {ref,"210ac1e29dc8f7090da0abcaaf827aa12f984475"}},
   0},
  {<<"cowboy">>,{pkg,<<"cowboy">>,<<"2.13.0">>},0},
  {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.16.1">>},1},

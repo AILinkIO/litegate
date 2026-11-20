@@ -3,6 +3,22 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 版本号以 `rebar.config` 的 release 为准，控制台侧栏与 `GET /api/version` 显示同一版本与 git commit。
 
+## 1.2.0 — 2026-11-20
+
+### 修复
+
+- **MiniMax Responses 工具调用**：并行工具调用按 OpenAI 排序是「全部 call → 全部 output」，
+  MiniMax 要求每个 result 紧跟对应 call，否则返回 2013
+  「invalid params, tool call result does not follow tool call」。透传前按 `call_id`
+  把结果移动到对应 call 后面，并去掉没有匹配 call 的孤立结果。
+
+### 变更
+
+- **存储引擎**：Bitcask 从 `6.6.0` 升级到 `12.0.1`。KV 数据与原始日志 / 配置格式无需迁移；
+  NIF 与 native 库需重新编译（发布包已包含）。跨过 `8.1.0` 后，旧版 search checkpoint 与
+  已封存 BM25 索引不能无损沿用，升级前需按部署文档重建 `store/search` 索引；原始检索文档
+  保留，重建后历史日志仍可搜索。
+
 ## 1.1.1 — 2026-10-30
 
 第二轮审查的 P0 回归修复、P1 稳定度加固与 P2 性能优化（[D05](designs/D05-regressions-stability-perf.md)，T16–T33），

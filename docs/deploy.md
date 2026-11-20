@@ -6,7 +6,7 @@
 
 ```sh
 scripts/release.sh
-# 产物：_build/prod/rel/litegate/litegate-1.1.1.tar.gz（含 ERTS，目标机无需安装 Erlang）
+# 产物：_build/prod/rel/litegate/litegate-1.2.0.tar.gz（含 ERTS，目标机无需安装 Erlang）
 ```
 
 目标机需与构建机的 CPU 架构、glibc、libicu 大版本一致（release 内含 bitcask NIF 与 ERTS 的本机代码），
@@ -17,7 +17,7 @@ scripts/release.sh
 ```sh
 sudo useradd --system --home-dir /var/lib/litegate --shell /usr/sbin/nologin litegate
 sudo mkdir -p /opt/litegate /etc/litegate
-sudo tar -xzf litegate-1.1.1.tar.gz -C /opt/litegate
+sudo tar -xzf litegate-1.2.0.tar.gz -C /opt/litegate
 
 sudo cp deploy/litegate.env.example /etc/litegate/litegate.env
 sudo chmod 600 /etc/litegate/litegate.env
@@ -76,6 +76,29 @@ mnesia 表结构升级在启动时自动执行（`lg_schema`）；数据目录�
 在后台自动回填：启动约 10 秒后开始，逐小时重算历史用量、解码日志补错误索引、扫描缓存补过期索引，可中断续跑，
 数据量大时可能持续数分钟；回填完成前概览、`errors_only` 查询与预算重建走原有路径，结果不变。原有键与值格式
 不变，可直接降级回上一版本（新增的派生数据会被忽略）；降级后再升级会自动补上降级期间写入的数据。
+
+### 升级到 Bitcask 12
+
+从 LiteGate `1.1.1` 升级到包含本变更的版本时，存储引擎从 Bitcask `6.6.0` 变为 `12.0.1`。KV-only cask（日志、对话、用量、
+缓存等）直接可用；只有 `store/search` 的全文检索派生索引跨过 Bitcask `8.1.0` 后不能沿用。停服后
+把 search 的 BM25 / checkpoint 派生文件移到数据目录外备份，启动时会从保留的原始检索文档自动重建：
+
+```sh
+sudo systemctl stop litegate
+backup=/var/lib/litegate/search-index-pre-12
+sudo install -d -m 700 "$backup"
+root=/var/lib/litegate/store/search
+for name in bm25.ckpt bm25.ckpt.prev docmap.ckpt docmap.ckpt.prev index.manifest field.schema bm25_segments; do
+    if [ -e "$root/$name" ]; then
+        sudo mv "$root/$name" "$backup"/
+    fi
+done
+sudo systemctl start litegate
+```
+
+不要移动或删除 `*.bitcask.data`、`bitcask.meta`、`kv.oki.*` 与写锁文件；它们分别是原始检索文档、
+分析器配置和 KV 索引。重建只处理 `store/search`，不影响日志与用量数据；首次启动可能因重建 BM25
+多花一些 CPU / 时间。若某些派生文件不存在，跳过即可。确认新版本搜索正常后再删除备份目录。
 
 ## 安全须知
 
