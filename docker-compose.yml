@@ -30,7 +30,7 @@ services:
     ports:
       - "${LITEGATE_HTTP_PORT:-4000}:4000"
     volumes:
-      - /home/david/app:/data
+      - /home/david/apps/litegate:/data
     env_file:
       - path: deploy/litegate.env
         required: false
