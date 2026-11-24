@@ -1,8 +1,9 @@
 # LiteGate 容器镜像：前端 → prod release（含 ERTS）→ slim 运行时
+# 三个阶段的基镜像统一为 Debian trixie（glibc 2.41），与构建产物、bitcask NIF 的运行环境一致
 # 数据在 /data（mnesia + bitcask + secret.key），节点名固定 litegate@127.0.0.1（见 config/vm.args）
 
 # ---- 前端（Node 独立阶段，利用层缓存：源码不动时跳过 npm ci）----
-FROM node:22-bookworm-slim AS web
+FROM node:24-trixie-slim AS web
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -11,6 +12,7 @@ COPY web/ ./
 RUN mkdir -p ../apps/lg_web/priv/static && npm run build
 
 # ---- Erlang 构建（bitcask NIF：CMake + C++23 + libicu）----
+# erlang:28 的默认基镜像就是 trixie；不写 erlang:28-trixie：该标签在 docker.1ms.run 镜像站不存在
 FROM erlang:28 AS build
 RUN sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends cmake g++ libicu-dev git libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
