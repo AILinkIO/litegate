@@ -3,6 +3,26 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 版本号以 `rebar.config` 的 release 为准，控制台侧栏与 `GET /api/version` 显示同一版本与 git commit。
 
+## 1.2.1 — 2026-11-24
+
+### 变更
+
+- **存储引擎**：Bitcask 从 `12.0.1` 升级到 `13.1.1`。盘上格式不变，KV 数据与 `store/search` 检索索引都直接沿用，
+  不用重建；NIF 需重新编译。依赖写法随上游的 umbrella 结构改为
+  `{bitcask, {git_subdir, "https://github.com/DavidAlphaFox/bitcask.git", {tag, "13.1.1"}, "apps/bitcask"}}`
+  （rebar3 3.14+；拉取时用 sparse checkout，构建机的 git 需 2.25+）。
+- **不要停在 13.1.0**：这个 tag 按 `git_subdir` 依赖时构建不通——`apps/bitcask/third_party` 是指向仓库根
+  `third_party/` 的符号链接，在只含 `apps/bitcask` 的 sparse checkout 里悬空，旧 hook 又按
+  `apps/bitcask/third_party/libbitcask` 初始化子模块，NIF 编不出来（`pathspec ... did not match`）。
+  13.1.1 只修了这个 hook（按物理路径取子模块，悬空时把 `/third_party/` 加进 sparse 范围）；Erlang/NIF 源码、
+  C API 与盘上格式和 13.1.0 完全相同，不用适配代码。
+- 本机若按 13.1.0 拉过依赖：改 tag 后 rebar3 不会重新拉取已有的 checkout，需要
+  `rebar3 unlock bitcask` 并删掉 `_build/default/lib/bitcask` 后再 `rebar3 compile`。
+- 上游这段的行为变化对本项目没有影响：`range` / `range_fold` 改为读开始那一刻的快照（清理任务边扫边删、迁移分页、
+  按小时聚合都不依赖迭代中看到自己的写）。
+- 随上游修掉的问题：原子批里删除存在的 key 之后重开，12.0.x 会截断数据文件（删除与之后的写丢失）；清理任务大量删键，
+  升级后不再有这个风险。
+
 ## 1.2.0 — 2026-11-20
 
 ### 修复

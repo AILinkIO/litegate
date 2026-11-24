@@ -12,7 +12,7 @@
 
 services:
   litegate:
-    image: litegate:${LITEGATE_IMAGE_TAG:-1.2.0}
+    image: litegate:${LITEGATE_IMAGE_TAG:-1.2.1}
     container_name: litegate
     build:
       context: .
