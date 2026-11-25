@@ -11,6 +11,7 @@
 
 -define(CHUNK, 16000).
 -define(CHUNKS, 200).
+-define(CLOSE_PAUSE_MS, 16000).   %% 大于 gun HTTP/1.1 的缺省 closing_timeout（15000）
 
 pool_test_() ->
     {setup,
@@ -31,7 +32,8 @@ pool_test_() ->
              [?_test(slow_consumer_bounded_mailbox(Port)),
               {timeout, 60, ?_test(two_waves_reuse(Port))},
               {timeout, 60, ?_test(failing_requests_leave_empty_mailbox(Port))},
-              ?_test(post_not_resent_after_received())]
+              ?_test(post_not_resent_after_received()),
+              {timeout, 60, ?_test(connection_close_stream_outlives_closing_timeout(Port))}]
      end}.
 
 %%====================================================================
@@ -57,6 +59,15 @@ reply(<<"/sse">>, Req0) ->
     Chunk = <<"data: ", (binary:copy(<<"x">>, ?CHUNK - 8))/binary, "\n\n">>,
     %% 网关中途断开时 stream_body 会失败，忽略即可
     _ = catch [cowboy_req:stream_body(Chunk, nofin, Req) || _ <- lists:seq(1, ?CHUNKS)],
+    _ = catch cowboy_req:stream_body(<<>>, fin, Req),
+    Req;
+reply(<<"/sse_close">>, Req0) ->
+    %% 带 connection: close 的 SSE，两帧之间停顿超过 gun 的缺省 closing_timeout（15 s）
+    Req = cowboy_req:stream_reply(200, #{<<"content-type">> => <<"text/event-stream">>,
+                                         <<"connection">> => <<"close">>}, Req0),
+    cowboy_req:stream_body(<<"data: one\n\n">>, nofin, Req),
+    timer:sleep(?CLOSE_PAUSE_MS),
+    _ = catch cowboy_req:stream_body(<<"data: two\n\n">>, nofin, Req),
     _ = catch cowboy_req:stream_body(<<>>, fin, Req),
     Req.
 
@@ -230,4 +241,19 @@ read_body(S, N) ->
     case gen_tcp:recv(S, 0) of
         {ok, Data} -> read_body(S, N - byte_size(Data));
         {error, _} -> closed
+    end.
+
+%% 上游带 connection: close 回复、响应体要很久才发完（大模型的 SSE 常见）：gun 收到这种响应头后进入 closing 状态，
+%% 缺省 15 s（closing_timeout）后以 normal 断开，还在收数据的流收到 {gun_error, _, _, {closed, normal}}，
+%% 网关报「Upstream request failed: {closed,normal}」。连接选项把 closing_timeout 设成 infinity，
+%% 请求的时长交给网关自己的分级超时（first_byte / idle / total）。
+connection_close_stream_outlives_closing_timeout(Port) ->
+    {ok, 200, _, S0} = lg_http:stream_open(<<"POST">>, url(Port, "/sse_close"), [], <<>>, 5000),
+    ?assertEqual(<<"data: one\n\ndata: two\n\n">>, drain_bin(S0, <<>>)).
+
+drain_bin(S, Acc) ->
+    case lg_http:stream_recv(S, 30000) of
+        {data, D, S1} -> drain_bin(S1, <<Acc/binary, D/binary>>);
+        {fin, D} -> <<Acc/binary, D/binary>>;
+        Other -> {unexpected, Acc, Other}
     end.

@@ -185,11 +185,15 @@ open_fresh(Host, Port, Opts) ->
 
 %% @doc gun:open 选项（HTTP/1.1；TLS 时校验证书与主机名并带 SNI）。realtime 的 WebSocket 连接同样使用。
 %% 系统没有 CA 证书时 public_key:cacerts_get/0 会崩溃（OTP 28 conv_error_reason 的 function_clause），
-%% 转成连接失败，避免把调用方进程一起带崩；明文 http 不需要证书
+%% 转成连接失败，避免把调用方进程一起带崩；明文 http 不需要证书。
+%% closing_timeout => infinity：上游带 connection: close 回复时 gun 进入 closing 状态，缺省 15 s 后以 normal 断开，
+%% 还没收完的响应体（大模型的 SSE 常常远超 15 s）收到 {closed, normal}、请求失败。请求时长已由网关自己的分级超时
+%% （upstream_timeout_ms / stream_idle_timeout_ms / stream_max_ms）约束，超时即丢弃连接，这里不再另设上限。
 -spec conn_opts(tcp | tls, string()) -> {ok, map()} | {error, term()}.
 conn_opts(Transport, Host) ->
     Base = #{transport => Transport,
              protocols => [http],
+             http_opts => #{closing_timeout => infinity},
              connect_timeout => lg_config:get(upstream_connect_timeout_ms),
              retry => 0},
     case Transport of

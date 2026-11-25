@@ -3,6 +3,25 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 版本号以 `rebar.config` 的 release 为准，控制台侧栏与 `GET /api/version` 显示同一版本与 git commit。
 
+## 1.3.0 — 2026-11-25
+
+### 变更
+
+- **存储引擎**：Bitcask `13.1.2` → `13.2.0`（MINOR）。上游这版只动了图层（图存储布局 2：大组的块目录外置成 B+ 树，
+  新建的图库缺省是布局 2），本项目只用 KV 与检索接口、不用图层，KV 与检索的接口、NIF、内嵌的 libbitcask（仍是 13.1.2）
+  与盘上格式都没变，数据直接沿用，不用适配代码。
+- 本机已按 13.1.2 拉过依赖时，改 tag 后要 `rebar3 upgrade bitcask`（或 `rebar3 unlock bitcask` 并删掉
+  `_build/default/lib/bitcask`）再编译。
+
+### 修复
+
+- **上游回复带 `Connection: close` 时，响应体超过 15 秒就被截断**，报
+  `Upstream request failed: {closed,normal}`（502）。gun 收到带 `connection: close` 的响应头后进入 closing 状态，
+  缺省 `closing_timeout` 15 秒一到就以 normal 断开连接，还在收数据的流（大模型的 SSE、慢的非流式响应体）随之失败。
+  上游连接现在把 `closing_timeout` 设为 `infinity`，请求时长只受网关自己的分级超时约束
+  （`upstream_timeout_ms` / `stream_idle_timeout_ms` / `stream_max_ms`）。回归测试
+  `lg_http_pool_tests:connection_close_stream_outlives_closing_timeout`（两帧之间停 16 秒）。
+
 ## 1.2.2 — 2026-11-25
 
 ### 变更
