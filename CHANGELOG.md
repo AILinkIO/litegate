@@ -3,6 +3,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 版本号以 `rebar.config` 的 release 为准，控制台侧栏与 `GET /api/version` 显示同一版本与 git commit。
 
+## 未发布
+
+### 变更
+
+- **存储引擎**：Bitcask `13.1.1` → `13.1.2`（PATCH）。上游只把内嵌的 libbitcask 从 13.1.1 升到 13.1.2，
+  两边的库源码、Erlang/NIF 源码、C API 与盘上格式都没变，数据直接沿用，不用适配代码。
+- 本机已按 13.1.1 拉过依赖时，改 tag 后要 `rebar3 upgrade bitcask`（或 `rebar3 unlock bitcask` 并删掉
+  `_build/default/lib/bitcask`）再编译，rebar3 不会自己重拉已有的 checkout。
+
 ## 1.2.1 — 2026-11-24
 
 ### 变更
