@@ -71,12 +71,19 @@ to_msg(#{<<"type">> := <<"custom_tool_call">>, <<"call_id">> := Id, <<"name">> :
     add_call(Id, N, iolist_to_binary(json:encode(#{<<"input">> => maps:get(<<"input">>, F, <<>>)})), Acc);
 to_msg(#{<<"type">> := T, <<"call_id">> := Id} = O, Acc)
   when T =:= <<"function_call_output">>; T =:= <<"custom_tool_call_output">> ->
-    Out = case maps:get(<<"output">>, O, <<>>) of
-              B when is_binary(B) -> B;
-              Parts when is_list(Parts) -> iolist_to_binary([X || #{<<"text">> := X} <- Parts]);
-              Other -> iolist_to_binary(json:encode(Other))
-          end,
-    [#{<<"role">> => <<"tool">>, <<"tool_call_id">> => Id, <<"content">> => Out} | Acc];
+    [#{<<"role">> => <<"tool">>, <<"tool_call_id">> => Id,
+       <<"content">> => output_text(maps:get(<<"output">>, O, <<>>))} | Acc];
+%% Codex 的内部上下文输出（如 agent.goal_objective）没有 call_id，但有 name / namespace。
+to_msg(#{<<"type">> := <<"function_call_output">>, <<"name">> := N} = O, Acc)
+  when not is_map_key(<<"call_id">>, O) ->
+    Name = case maps:get(<<"namespace">>, O, null) of
+               Ns when is_binary(Ns), Ns =/= <<>> -> <<Ns/binary, ?NS_SEP/binary, N/binary>>;
+               _ -> N
+           end,
+    Text = iolist_to_binary([<<"<context_tool_output name=\"">>, Name, <<"\">\n">>,
+                             output_text(maps:get(<<"output">>, O, <<>>)),
+                             <<"\n</context_tool_output>">>]),
+    [#{<<"type">> => <<"message">>, <<"role">> => <<"user">>, <<"content">> => Text} | Acc];
 %% reasoning 项：暂存，挂到其后的 assistant 消息上
 to_msg(#{<<"type">> := <<"reasoning">>} = R, Acc) ->
     Text = iolist_to_binary([X || #{<<"text">> := X} <- list(maps:get(<<"content">>, R, []))
@@ -349,3 +356,9 @@ new_id(Prefix) ->
 
 list(L) when is_list(L) -> L;
 list(_) -> [].
+
+output_text(B) when is_binary(B) -> B;
+output_text(Parts) when is_list(Parts) ->
+    iolist_to_binary([X || #{<<"text">> := X} <- Parts]);
+output_text(Other) ->
+    iolist_to_binary(json:encode(Other)).

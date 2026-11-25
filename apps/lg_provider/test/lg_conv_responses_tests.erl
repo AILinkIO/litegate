@@ -125,6 +125,26 @@ codex_history_test() ->
     ?assertMatch(#{<<"role">> := <<"tool">>, <<"tool_call_id">> := <<"c1">>, <<"content">> := <<"done">>}, T1),
     ?assertMatch(#{<<"tool_call_id">> := <<"c2">>}, T2).
 
+%% Codex 内部上下文输出没有 call_id；转换为显式上下文消息而不是拒绝整个请求
+codex_context_output_test() ->
+    C = to_chat(#{<<"model">> => <<"m">>,
+                  <<"input">> => [#{<<"type">> => <<"function_call_output">>,
+                                    <<"id">> => <<"fco_1">>, <<"name">> => <<"goal_objective">>,
+                                    <<"namespace">> => <<"agent">>, <<"output">> => <<"完成W开头的任务"/utf8>>}]}),
+    Expected = iolist_to_binary([<<"<context_tool_output name=\"agent__goal_objective\">\n">>,
+                                 <<"完成W开头的任务"/utf8>>, <<"\n</context_tool_output>">>]),
+    ?assertEqual([#{<<"type">> => <<"message">>, <<"role">> => <<"user">>,
+                    <<"content">> => Expected}],
+                 maps:get(<<"messages">>, C)).
+
+%% 没有 call_id 也没有可识别上下文标记的输出仍是协议错误
+unknown_output_without_call_id_test() ->
+    ?assertMatch({error, {unsupported, <<"input item function_call_output">>}},
+                 lg_conv_responses:request_to_chat(
+                   #{<<"model">> => <<"m">>,
+                     <<"input">> => [#{<<"type">> => <<"function_call_output">>,
+                                      <<"id">> => <<"fco_1">>, <<"output">> => <<"x">>}]})).
+
 %% Chat 响应 → reasoning 项 + custom_tool_call + 带 namespace 的 function_call
 codex_response_test() ->
     Chat = #{<<"model">> => <<"up">>,

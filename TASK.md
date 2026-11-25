@@ -104,6 +104,12 @@
 第八批（P2 性能，按需）：T29 ∥ T31 ∥ T32 ∥ T33；T30 在 T28 之后
 ```
 
+## Codex 兼容缺陷（2026-11-26，设计：[D06](designs/D06-codex-context-outputs.md)）
+
+| ID | 任务 | 状态 | 依赖 | 预估 |
+|---|---|---|---|---|
+| [T34](tasks/T34-codex-context-outputs.md) | 兼容 Codex 无 call_id 的内部上下文输出（goal 会话持续 400） | 待评审 | — | 2 小时 |
+
 ## 通用完成标准（所有任务）
 
 - `rebar3 eunit`、`rebar3 xref`、`rebar3 dialyzer` 全绿；涉及前端时 `npm test` 全绿；

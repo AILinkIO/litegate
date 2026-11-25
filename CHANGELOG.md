@@ -3,6 +3,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 版本号以 `rebar.config` 的 release 为准，控制台侧栏与 `GET /api/version` 显示同一版本与 git commit。
 
+## 1.3.1 — 2026-11-26
+
+### 修复
+
+- **Codex goal 会话经 Responses → Chat 转换时持续 400**：Codex 内部上下文输出（如
+  `agent.goal_objective`）使用无 `call_id` 的 `function_call_output`，旧转换器将其判定为
+  `Unsupported by target protocol`。现在转换为带 `<context_tool_output>` 标签的用户上下文消息；
+  带 `call_id` 的正常工具结果行为不变。回归测试见 `lg_conv_responses_tests`。
+
 ## 1.3.0 — 2026-11-25
 
 ### 变更

@@ -18,7 +18,12 @@ middleware_test_() ->
      fun(#{dir := Dir}) ->
              application:stop(lg_router),
              [begin code:purge(M), code:delete(M), code:purge(M) end || M <- [mw_plug, mw_lib, lg_mw_model_map_dup]],
-             lg_core_test_util:stop(Dir)
+             lg_core_test_util:stop(Dir),
+             %% 分布式节点名会进入 mnesia schema 校验；恢复 nonode，避免污染后续模块
+             case node() of
+                 nonode@nohost -> ok;
+                 _ -> net_kernel:stop()
+             end
      end,
      [fun(C) -> ?_test(builtins(C)) end,
       fun(C) -> {timeout, 30, ?_test(plugins(C))} end,
