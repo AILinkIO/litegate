@@ -12,12 +12,13 @@
 
 services:
   litegate:
-    image: litegate:${LITEGATE_IMAGE_TAG:-1.3.1}
+    image: litegate:${LITEGATE_IMAGE_TAG:-1.3.2}
     container_name: litegate
     build:
       context: .
       args:
         GIT_SHA: ${GIT_SHA:-dev}
+        APP_VERSION: ${LITEGATE_IMAGE_TAG:-1.3.2}
     user: "${LITEGATE_UID:-1000}:${LITEGATE_GID:-1000}"
     restart: unless-stopped
     # 优雅关停：排空在途请求（shutdown_drain_ms 默认 20s）+ 关闭监听 + bitcask 最终 flush，默认 10s 不够

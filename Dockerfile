@@ -34,6 +34,10 @@ RUN rebar3 as prod release
 # 与构建阶段同为 Debian trixie（erlang:28 基于 trixie，ERTS 依赖 glibc 2.41），libicu 供 bitcask NIF 使用；
 # ca-certificates 供上游 HTTPS 校验（public_key:cacerts_get/0 读系统证书，--no-install-recommends 不会随 curl 装上）
 FROM debian:trixie-slim
+# 镜像版本标签：与 rebar.config 的 release 版本一致，构建时可 --build-arg APP_VERSION=x.y.z 覆盖
+ARG APP_VERSION=1.3.2
+LABEL org.opencontainers.image.title="litegate" \
+      org.opencontainers.image.version="${APP_VERSION}"
 RUN sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends libicu76 libtbb12 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home /data litegate

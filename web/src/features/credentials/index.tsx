@@ -5,6 +5,7 @@ import { api, BALANCE_KINDS, seg, type Credential } from '@/lib/api'
 import { fmtTime, fmtUntil } from '@/lib/format'
 import { useGet, useInvalidate } from '@/lib/query'
 import { cn } from '@/lib/utils'
+import { t } from '@/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -50,14 +51,14 @@ export function Credentials() {
 
   return (
     <>
-      <PageHeader title='上游凭证' subtitle='上游服务的协议、地址与 API Key（加密存储）' actions={
+      <PageHeader title={t('上游凭证')} subtitle={t('上游服务的协议、地址与 API Key（加密存储）')} actions={
         <>
           {hasPlans && (
             <Button variant='ghost' onClick={refreshPlans} disabled={refreshing} className='text-muted-foreground'>
-              <RefreshCw className={cn(refreshing && 'animate-spin')} /> 刷新套餐额度
+              <RefreshCw className={cn(refreshing && 'animate-spin')} /> {t('刷新套餐额度')}
             </Button>
           )}
-          <Button onClick={() => setEditing('new')}><Plus /> 添加凭证</Button>
+          <Button onClick={() => setEditing('new')}><Plus /> {t('添加凭证')}</Button>
         </>
       } />
       {q.error && <ErrorAlert message={q.error.message} />}
@@ -75,37 +76,37 @@ export function Credentials() {
                     <span className='font-semibold'>{c.name}</span>
                     <Badge variant='muted'>{c.protocol === 'openai' ? 'OpenAI' : 'Anthropic'}</Badge>
                     {c.options.responses_api && <Badge variant='muted'>Responses</Badge>}
-                    {c.options.plan && <Badge variant='info'>{PLAN_KINDS[c.options.plan.kind]}</Badge>}
-                    {!!c.options.max_concurrency && <Badge variant='outline'>并发 {c.options.max_concurrency}</Badge>}
+                    {c.options.plan && <Badge variant='info'>{t(PLAN_KINDS[c.options.plan.kind])}</Badge>}
+                    {!!c.options.max_concurrency && <Badge variant='outline'>{t('并发 {n}', { n: c.options.max_concurrency })}</Badge>}
                   </div>
                   <div className='mt-0.5 truncate font-mono text-xs text-muted-foreground'>{c.base_url}</div>
                   <div className='text-xs text-muted-foreground'>
-                    Key {c.api_key_hint ? <span className='font-mono'>…{c.api_key_hint.slice(-4)}</span> : '无'}
-                    {c.provider && <> · 计费按 <span className='font-mono'>{c.provider}</span></>}
+                    Key {c.api_key_hint ? <span className='font-mono'>…{c.api_key_hint.slice(-4)}</span> : t('无')}
+                    {c.provider && <> · {t('计费按')} <span className='font-mono'>{c.provider}</span></>}
                   </div>
                 </div>
               </div>
               <Quota c={c} />
               <div className='ms-auto flex items-center gap-1'>
-                <Switch checked={c.enabled} onCheckedChange={() => toggle(c)} aria-label='启用' />
-                <Button variant='ghost' size='icon' className='ms-2' aria-label='编辑' onClick={() => setEditing(c)}><Pencil /></Button>
-                <Button variant='ghost' size='icon' aria-label='删除' onClick={() => setDeleting(c)}><Trash2 /></Button>
+                <Switch checked={c.enabled} onCheckedChange={() => toggle(c)} aria-label={t('启用')} />
+                <Button variant='ghost' size='icon' className='ms-2' aria-label={t('编辑')} onClick={() => setEditing(c)}><Pencil /></Button>
+                <Button variant='ghost' size='icon' aria-label={t('删除')} onClick={() => setDeleting(c)}><Trash2 /></Button>
               </div>
             </div>
           ))}
-          {data.length === 0 && <Empty>还没有凭证。添加一个上游服务的 API Key 后即可在路由表中使用。</Empty>}
+          {data.length === 0 && <Empty>{t('还没有凭证。添加一个上游服务的 API Key 后即可在路由表中使用。')}</Empty>}
         </div>
       )}
       {editing && (
         <CredentialDialog credential={editing === 'new' ? null : editing} onClose={() => setEditing(null)}
           onSaved={() => invalidate('/credentials')} />
       )}
-      <ConfirmDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)} title='删除凭证' destructive
-        desc={`确定删除「${deleting?.name}」？被路由引用的凭证无法删除。`} confirmText='删除'
+      <ConfirmDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)} title={t('删除凭证')} destructive
+        desc={t('确定删除「{name}」？被路由引用的凭证无法删除。', { name: deleting?.name ?? '' })} confirmText={t('删除')}
         handleConfirm={async () => {
           try {
             await api.del(`/credentials/${seg(deleting!.id)}`)
-            toast.success('已删除')
+            toast.success(t('已删除'))
             await invalidate('/credentials')
           } catch (e) {
             toast.error((e as Error).message)
@@ -124,22 +125,24 @@ function Quota({ c }: { c: Credential }) {
     const windows = p.windows ?? []
     return (
       <div className='grid w-56 gap-1.5'>
-        {p.error && <span className='text-xs text-destructive'>额度查询失败：{p.error}</span>}
+        {p.error && <span className='text-xs text-destructive'>{t('额度查询失败：{error}', { error: p.error })}</span>}
         {windows.map((w) => (
           <Tooltip key={w.name}>
             <TooltipTrigger asChild>
               <div>
                 <div className='mb-0.5 flex justify-between text-xs'>
                   <span className='text-muted-foreground'>{w.name} <span className='num text-foreground'>{Math.round(w.used_pct)}%</span></span>
-                  <span className='text-muted-foreground'>{fmtUntil(w.resets_at)}后重置</span>
+                  <span className='text-muted-foreground'>{t('{time}后重置', { time: fmtUntil(w.resets_at) })}</span>
                 </div>
                 <Meter pct={w.used_pct} warnAt={100 - p.reserve_pct} />
               </div>
             </TooltipTrigger>
-            <TooltipContent>重置于 {fmtTime(w.resets_at)}{p.fetched_at ? `，查询于 ${fmtTime(p.fetched_at)}` : ''}</TooltipContent>
+            <TooltipContent>{p.fetched_at
+              ? t('重置于 {time}，查询于 {fetched}', { time: fmtTime(w.resets_at), fetched: fmtTime(p.fetched_at) })
+              : t('重置于 {time}', { time: fmtTime(w.resets_at) })}</TooltipContent>
           </Tooltip>
         ))}
-        {!p.error && windows.length === 0 && <span className='text-xs text-muted-foreground'>额度尚未查询</span>}
+        {!p.error && windows.length === 0 && <span className='text-xs text-muted-foreground'>{t('额度尚未查询')}</span>}
       </div>
     )
   }
@@ -149,7 +152,7 @@ function Quota({ c }: { c: Credential }) {
       <div className='w-56 text-end'>
         <div className={cn('num text-lg font-semibold', low && 'text-destructive')}>{fmtMoney(b.amount, b.currency)}</div>
         <div className={cn('text-xs', b.error ? 'text-destructive' : 'text-muted-foreground')}>
-          {b.error ? `查询失败：${b.error}` : `${BALANCE_KINDS[b.kind]}余额`}
+          {b.error ? t('查询失败：{error}', { error: b.error }) : t('{kind}余额', { kind: t(BALANCE_KINDS[b.kind]) })}
         </div>
       </div>
     )

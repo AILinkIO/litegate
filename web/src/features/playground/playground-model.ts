@@ -1,3 +1,4 @@
+import { t, tk } from '@/i18n'
 import type { LogEntry, RouteCaps } from '@/lib/api'
 
 type Format = 'chat' | 'messages' | 'responses' | 'images' | 'speech' | 'systemone'
@@ -6,9 +7,9 @@ const FORMATS: Record<Format, { label: string; gateway: string }> = {
   chat: { label: 'OpenAI Chat Completions', gateway: '/v1/chat/completions' },
   messages: { label: 'Anthropic Messages', gateway: '/v1/messages' },
   responses: { label: 'OpenAI Responses', gateway: '/v1/responses' },
-  images: { label: '图片生成', gateway: '/v1/images/generations' },
-  speech: { label: '语音合成', gateway: '/v1/audio/speech' },
-  systemone: { label: '决策模型（System One）', gateway: '/v1/systemone' },
+  images: { label: tk('图片生成'), gateway: '/v1/images/generations' },
+  speech: { label: tk('语音合成'), gateway: '/v1/audio/speech' },
+  systemone: { label: tk('决策模型（System One）'), gateway: '/v1/systemone' },
 }
 
 const isMedia = (f: Format) => f === 'images' || f === 'speech'
@@ -16,19 +17,21 @@ const isMedia = (f: Format) => f === 'images' || f === 'speech'
 const isChat = (f: Format) => !isMedia(f) && f !== 'systemone'
 
 // 空对话时的示例问题（点击填入输入框）
-const SUGGESTIONS = ['用三句话介绍一下你自己', '写一个 Python 快速排序并解释', '比较 TCP 和 UDP 的区别', '把「你好，世界」翻译成英文和日文']
+const SUGGESTIONS = [tk('用三句话介绍一下你自己'), tk('写一个 Python 快速排序并解释'), tk('比较 TCP 和 UDP 的区别'), tk('把「你好，世界」翻译成英文和日文')]
 // 决策模型的示例 state（配合默认问题表）
-const DECISION_SUGGESTIONS = ['订单支付后超过 24 小时仍未到账', '接入 SDK 后调用接口一直返回 500', '想了解一下企业版的价格']
+const DECISION_SUGGESTIONS = [tk('订单支付后超过 24 小时仍未到账'), tk('接入 SDK 后调用接口一直返回 500'), tk('想了解一下企业版的价格')]
 
 // 决策模型（System One）的问题：choice 单选（criteria 每行「key: 说明」）、noul 是非、score 有序打分（criteria 每行一个等级，从低到高）
 type QuestionType = 'choice' | 'noul' | 'score'
 interface Question { id: string; type: QuestionType; instructions: string; criteria: string }
-const QUESTION_TYPES: Record<QuestionType, string> = { choice: '单选', noul: '是非', score: '打分' }
-const DEFAULT_QUESTIONS: Question[] = [
-  { id: 'department', type: 'choice', instructions: '应该由哪个团队处理？',
-    criteria: 'billing: 支付、退款和账单问题\ntechnical: 产品故障和集成问题\nsales: 购买、报价与合作咨询' },
-  { id: 'escalate', type: 'noul', instructions: '是否需要立即通知值班人员？', criteria: '' },
-  { id: 'severity', type: 'score', instructions: '这个问题有多严重？', criteria: '轻微问题\n部分功能受影响\n核心功能不可用\n严重业务影响' },
+const QUESTION_TYPES: Record<QuestionType, string> = { choice: tk('单选'), noul: tk('是非'), score: tk('打分') }
+// 示例问题表按当前语言生成（用户可编辑的示例内容，不在模块顶层翻译）
+const defaultQuestions = (): Question[] => [
+  { id: 'department', type: 'choice', instructions: t('应该由哪个团队处理？'),
+    criteria: [`billing: ${t('支付、退款和账单问题')}`, `technical: ${t('产品故障和集成问题')}`, `sales: ${t('购买、报价与合作咨询')}`].join('\n') },
+  { id: 'escalate', type: 'noul', instructions: t('是否需要立即通知值班人员？'), criteria: '' },
+  { id: 'severity', type: 'score', instructions: t('这个问题有多严重？'),
+    criteria: [t('轻微问题'), t('部分功能受影响'), t('核心功能不可用'), t('严重业务影响')].join('\n') },
 ]
 
 // 决策模型的回答（/v1/systemone 响应 answers 里的一项）
@@ -89,18 +92,18 @@ interface Turn {
 }
 
 const STORE = 'lg.playground'
-const DEFAULTS: Settings = { route: '', format: 'chat', system: '', temperature: '', maxTokens: '1024', effort: '', stream: true,
-                             size: '1024x1024', n: '1', voice: '', audioFormat: 'mp3', questions: DEFAULT_QUESTIONS }
+const defaults = (): Settings => ({ route: '', format: 'chat', system: '', temperature: '', maxTokens: '1024', effort: '', stream: true,
+                                   size: '1024x1024', n: '1', voice: '', audioFormat: 'mp3', questions: defaultQuestions() })
 
 function loadSaved(): { settings: Settings; turns: Turn[] } {
   try {
     const v = JSON.parse(localStorage.getItem(STORE) ?? 'null')
     if (v && v.settings) {
-      return { settings: { ...DEFAULTS, ...v.settings },
+      return { settings: { ...defaults(), ...v.settings },
                turns: (v.turns ?? []).filter((t: Turn) => !t.pending).map(forStorage) }
     }
   } catch { /* 忽略损坏或不可用的本地存储 */ }
-  return { settings: DEFAULTS, turns: [] }
+  return { settings: defaults(), turns: [] }
 }
 
 // 本地存储不保存音频与附带的图片（体积大），只记图片张数
@@ -170,7 +173,7 @@ function buildQuestions(qs: Question[]): Record<string, unknown> {
     if (q.type === 'choice') {
       const criteria: Record<string, string> = {}
       for (const l of lines(q)) {
-        const m = /^([^:：]+)[:：]\s*(.*)$/.exec(l)
+        const m = /^([^:\uff1a]+)[:\uff1a]\s*(.*)$/.exec(l)
         if (m) criteria[m[1].trim()] = m[2].trim() || m[1].trim()
         else criteria[l] = l
       }
@@ -185,17 +188,17 @@ function buildQuestions(qs: Question[]): Record<string, unknown> {
 }
 
 function questionsError(qs: Question[]): string | undefined {
-  if (!qs.length) return '至少要有一个问题'
+  if (!qs.length) return t('至少要有一个问题')
   const ids = new Set<string>()
   for (const q of qs) {
     const id = q.id.trim()
-    if (!id) return '问题 id 不能为空'
-    if (ids.has(id)) return `问题 id 重复：${id}`
+    if (!id) return t('问题 id 不能为空')
+    if (ids.has(id)) return t('问题 id 重复：{id}', { id })
     ids.add(id)
-    if (!q.instructions.trim()) return `${id}：问题描述不能为空`
+    if (!q.instructions.trim()) return t('{id}：问题描述不能为空', { id })
     const n = lines(q).length
-    if (q.type === 'choice' && n < 2) return `${id}：单选至少两个选项`
-    if (q.type === 'score' && n < 2) return `${id}：打分至少两个等级`
+    if (q.type === 'choice' && n < 2) return t('{id}：单选至少两个选项', { id })
+    if (q.type === 'score' && n < 2) return t('{id}：打分至少两个等级', { id })
   }
   return undefined
 }
@@ -276,6 +279,12 @@ function parseSync(format: Format, j: any): Partial<Turn> {
   }
 }
 
+// 用户点「停止」时写进 Turn.error 的标记（存原文，显示时再翻译）
+const STOPPED = tk('已停止')
+
+// applyEvent 的参数 t 遮住了 t()，错误文案放外面
+const upstreamError = () => t('上游错误')
+
 // 流式事件增量更新
 function applyEvent(format: Format, t: Turn, event: string | null, data: any): Turn {
   const tools = [...(t.tools ?? [])]
@@ -295,7 +304,7 @@ function applyEvent(format: Format, t: Turn, event: string | null, data: any): T
     return { ...n, tools }
   }
   if (format === 'messages') {
-    if (event === 'error') return { ...t, error: data?.error?.message ?? '上游错误' }
+    if (event === 'error') return { ...t, error: data?.error?.message ?? upstreamError() }
     if (event === 'content_block_start' && data.content_block?.type === 'tool_use') {
       return { ...t, tools: [...tools, { name: data.content_block.name, args: '' }] }
     }
@@ -320,7 +329,7 @@ function applyEvent(format: Format, t: Turn, event: string | null, data: any): T
       if (!tools.length) return t
       tools[tools.length - 1] = { ...tools[tools.length - 1], args: tools[tools.length - 1].args + data.delta }
       return { ...t, tools }
-    case 'error': return { ...t, error: data.message ?? '上游错误' }
+    case 'error': return { ...t, error: data.message ?? upstreamError() }
     default: return t
   }
 }
@@ -351,7 +360,7 @@ export {
   buildBody,
   curlFor,
   DECISION_SUGGESTIONS,
-  DEFAULT_QUESTIONS,
+  defaultQuestions,
   FORMATS,
   forStorage,
   isChat,
@@ -360,6 +369,7 @@ export {
   readImage,
   QUESTION_TYPES,
   questionsError,
+  STOPPED,
   STORE,
   SUGGESTIONS,
 }

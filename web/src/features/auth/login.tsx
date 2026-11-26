@@ -6,6 +6,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Field } from '@/components/form-field'
 import { Input } from '@/components/ui/input'
 import { Logo } from '@/assets/logo'
+import { LanguageSwitch } from '@/components/language-switch'
+import { t } from '@/i18n'
 
 export function Login() {
   const { login } = useAuth()
@@ -28,7 +30,10 @@ export function Login() {
   }
 
   return (
-    <div className='flex min-h-svh items-center justify-center p-4'>
+    <div className='relative flex min-h-svh items-center justify-center p-4'>
+      <div className='absolute end-4 top-4'>
+        <LanguageSwitch />
+      </div>
       <div className='w-full max-w-sm'>
         <div className='mb-6 flex items-center justify-center gap-2.5'>
           <div className='flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground'>
@@ -36,7 +41,7 @@ export function Login() {
           </div>
           <div className='leading-tight'>
             <div className='text-lg font-semibold'>LiteGate</div>
-            <div className='text-xs text-muted-foreground'>LLM 网关控制台</div>
+            <div className='text-xs text-muted-foreground'>{t('LLM 网关控制台')}</div>
           </div>
         </div>
         <Card>
@@ -47,13 +52,13 @@ export function Login() {
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}
-              <Field label='用户名'>
+              <Field label={t('用户名')}>
                 <Input autoFocus autoComplete='username' value={username} onChange={(e) => setUsername(e.target.value)} />
               </Field>
-              <Field label='密码'>
+              <Field label={t('密码')}>
                 <Input type='password' autoComplete='current-password' value={password} onChange={(e) => setPassword(e.target.value)} />
               </Field>
-              <Button type='submit' className='mt-1 w-full' disabled={busy || !username || !password}>登录</Button>
+              <Button type='submit' className='mt-1 w-full' disabled={busy || !username || !password}>{t('登录')}</Button>
             </form>
           </CardContent>
         </Card>

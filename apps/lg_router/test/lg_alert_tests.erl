@@ -20,6 +20,7 @@ alert_test_() ->
              [?_test(config_validation(Port)),
               ?_test(upstream_down(Port)),
               ?_test(budget(Port)),
+              ?_test(budget_english(Port)),
               ?_test(plan_quota(Port)),
               ?_test(catalog(Port)),
               ?_test(login_brute_force(Port)),
@@ -131,6 +132,52 @@ budget(Port) ->
     ?assertEqual(1, length([X || #{path := <<"/hook">>} = X <- lg_mock_upstream:requests()])),
     ?assertMatch(#{<<"event">> := <<"budget">>, <<"title">> := <<"预算告警：API Key spender"/utf8>>,
                    <<"data">> := #{<<"max_usd">> := 1}}, B).
+
+%% alert_language = en：通知标题与正文为英文；改回后恢复中文
+budget_english(Port) ->
+    reset(),
+    ok = lg_config:set(alert_language, <<"en">>),
+    ?assertEqual(en, lg_alert:lang()),
+    Ch = channel(Port),
+    rule(<<"budget">>, 50, Ch),
+    {ok, _, #lg_api_key{id = KeyId}} = lg_api_keys:create(#{<<"name">> => <<"spender-en">>}),
+    {ok, _} = lg_limits:set_budget({key, KeyId}, #{<<"period">> => <<"day">>, <<"max_usd">> => 1}),
+    expect(1),
+    ok = lg_budget:add(KeyId, undefined, [], 0.6),
+    [B] = hooks(1),
+    ?assertMatch(#{<<"event">> := <<"budget">>, <<"title">> := <<"Budget alert: API Key spender-en">>}, B),
+    #{<<"text">> := Text} = B,
+    ?assertMatch({match, _}, re:run(Text, <<"^Today: \\$0\\.6000 / \\$1\\.00 used \\(60\\.0%\\), reached the 50% threshold$">>)),
+    ok = lg_config:unset(alert_language),
+    ?assertEqual(zh, lg_alert:lang()),
+    reset().
+
+%% 每个事件两种语言都有文案；英文不含中日韩字符
+copy_test() ->
+    Cases = [{test, []},
+             {upstream_down, [<<"up / m">>, 1, server, <<"boom">>]},
+             {upstream_down, [<<"up / m">>, 3, timeout, <<>>]},
+             {upstream_recovered, [<<"up / m">>]},
+             {budget, [<<"API Key k">>, month, 1.5, 2.0, 75.0, 50]},
+             {plan_quota, [<<"GLM">>, <<"5h">>, 95, 90, <<"at 2026-11-25 14:00">>]},
+             {plan_quota, [<<"GLM">>, <<"5h">>, 100, 90, <<"at 2026-11-25 14:00">>]},
+             {plan_recovered, [<<"GLM">>, <<"5h">>]},
+             {balance_low, [<<"DS">>, <<"1.00 CNY">>, 10]},
+             {balance_recovered, [<<"DS">>, <<"20.00 CNY">>]},
+             {login_brute_force, [<<"192.0.2.1">>, <<"admin">>, 5]},
+             {catalog_sync_failed, []}],
+    [begin
+         {ZT, ZX} = lg_alert:copy(zh, E, A),
+         {ET, EX} = lg_alert:copy(en, E, A),
+         ?assert(is_binary(ZT) andalso is_binary(ZX) andalso ZT =/= <<>>),
+         ?assertEqual(nomatch, re:run(<<ET/binary, EX/binary>>, "[\\x{3000}-\\x{9fff}\\x{ff00}-\\x{ffef}]", [unicode]))
+     end || {E, A} <- Cases],
+    ?assertEqual({<<"Upstream down: up / m">>, <<"1 consecutive failure, last error: server boom">>},
+                 lg_alert:copy(en, upstream_down, [<<"up / m">>, 1, server, <<"boom">>])),
+    ?assertEqual({<<"Plan quota exhausted: GLM">>, <<"5h window 100% used (threshold 90%), resets at 2026-11-25 14:00">>},
+                 lg_alert:copy(en, plan_quota, [<<"GLM">>, <<"5h">>, 100, 90, <<"at 2026-11-25 14:00">>])),
+    ?assertEqual({<<"上游故障：up / m"/utf8>>, <<"连续失败 3 次，最近错误：timeout "/utf8>>},
+                 lg_alert:copy(zh, upstream_down, [<<"up / m">>, 3, timeout, <<>>])).
 
 plan_quota(Port) ->
     reset(),

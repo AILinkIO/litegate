@@ -81,7 +81,9 @@ record(#{id := Id, kind := Kind} = Ctx, F, Stream, Body, Out, Status) ->
     LiveEnd = maps:filter(fun(_, V) -> V =/= undefined end,
                           maps:with([route, client, status, attempts, error, usage, cost, plan, duration_ms,
                                      ttft_ms, credential, upstream_model], Log)),
-    lg_live:request_end(Id, LiveEnd#{narrative => try lg_narrate:lines(Log) catch _:_ -> [] end}),
+    %% 两种语言都算好：实时视图的每个连接按自己的语言选一份（lg_api:localize_live/2）
+    lg_live:request_end(Id, LiveEnd#{narrative => try lg_narrate:lines(Log, zh) catch _:_ -> [] end,
+                                     narrative_en => try lg_narrate:lines(Log, en) catch _:_ -> [] end}),
     lg_otlp:submit(Log, Messages, #{started_at => maps:get(started_at, Out),
                                     traceparent => maps:get(traceparent, Ctx, undefined)}),
     case Ctx of

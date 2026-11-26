@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Field } from '@/components/form-field'
 import { Input } from '@/components/ui/input'
+import { t } from '@/i18n'
 
 export function PasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const [pw, setPw] = useState('')
@@ -18,7 +19,7 @@ export function PasswordDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     setBusy(true)
     try {
       await api.put('/auth/password', { password: pw })
-      toast.success('密码已修改，请重新登录')
+      toast.success(t('密码已修改，请重新登录'))
       onOpenChange(false)
       await logout()
     } catch (e) {
@@ -32,19 +33,19 @@ export function PasswordDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className='sm:max-w-sm'>
         <DialogHeader>
-          <DialogTitle>修改密码</DialogTitle>
+          <DialogTitle>{t('修改密码')}</DialogTitle>
         </DialogHeader>
         <div className='grid gap-4'>
-          <Field label='新密码' hint='至少 8 位'>
+          <Field label={t('新密码')} hint={t('至少 8 位')}>
             <Input type='password' autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
           </Field>
-          <Field label='确认新密码' error={mismatch ? '两次输入不一致' : undefined}>
+          <Field label={t('确认新密码')} error={mismatch ? t('两次输入不一致') : undefined}>
             <Input type='password' value={pw2} onChange={(e) => setPw2(e.target.value)} aria-invalid={mismatch} />
           </Field>
         </div>
         <DialogFooter>
-          <Button variant='outline' onClick={() => onOpenChange(false)}>取消</Button>
-          <Button onClick={save} disabled={busy || pw.length < 8 || pw !== pw2}>保存</Button>
+          <Button variant='outline' onClick={() => onOpenChange(false)}>{t('取消')}</Button>
+          <Button onClick={save} disabled={busy || pw.length < 8 || pw !== pw2}>{t('保存')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

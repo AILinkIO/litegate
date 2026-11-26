@@ -1,5 +1,7 @@
 # LiteGate
 
+[English](README.en.md) | 简体中文
+
 LiteGate 是基于 Erlang/OTP 的 LLM API 统一网关，兼容 OpenAI 与 Anthropic 接口格式。
 它提供多凭证路由、失败回退、额度控制、规则路由、会话粘性、用量计费和管理控制台。
 
@@ -55,6 +57,8 @@ rebar3 shell
 2. 添加上游凭证
 3. 创建路由
 4. 创建 API Key
+
+控制台支持中文和英文，可在顶栏的语言按钮切换，缺省跟随浏览器语言。
 
 发送 OpenAI 格式请求：
 

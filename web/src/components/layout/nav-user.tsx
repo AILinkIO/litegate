@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar'
 import { PasswordDialog } from '@/components/password-dialog'
+import { t } from '@/i18n'
 
 /** 侧栏底部：当前用户；开启控制台登录时可修改密码、退出 */
 export function NavUser() {
@@ -19,8 +20,8 @@ export function NavUser() {
   const [pwOpen, setPwOpen] = useState(false)
   if (!user) return null
   const authEnabled = user.auth_enabled !== false
-  const role = user.role === 'admin' ? '管理员' : '用户'
-  const name = authEnabled ? user.username : '本机管理员'
+  const role = user.role === 'admin' ? t('管理员') : t('用户')
+  const name = authEnabled ? user.username : t('本机管理员')
 
   return (
     <>
@@ -34,23 +35,23 @@ export function NavUser() {
                 </div>
                 <div className='grid flex-1 text-start leading-tight'>
                   <span className='truncate font-medium'>{name}</span>
-                  <span className='truncate text-xs text-muted-foreground'>{authEnabled ? role : '未开启控制台登录'}</span>
+                  <span className='truncate text-xs text-muted-foreground'>{authEnabled ? role : t('未开启控制台登录')}</span>
                 </div>
                 <ChevronsUpDown className='ms-auto size-4 text-muted-foreground' />
               </SidebarMenuButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent className='min-w-52 rounded-lg' side={isMobile ? 'bottom' : 'right'} align='end' sideOffset={4}>
               <DropdownMenuLabel className='font-normal text-muted-foreground'>
-                {name}（{role}）
+                {t('{name}（{role}）', { name, role })}
               </DropdownMenuLabel>
               {authEnabled && (
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => setPwOpen(true)}>
-                    <KeyRound /> 修改密码
+                    <KeyRound /> {t('修改密码')}
                   </DropdownMenuItem>
                   <DropdownMenuItem variant='destructive' onClick={() => logout()}>
-                    <LogOut /> 退出登录
+                    <LogOut /> {t('退出登录')}
                   </DropdownMenuItem>
                 </>
               )}

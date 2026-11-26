@@ -1,5 +1,7 @@
 # 开发
 
+[English](en/development.md) | 简体中文
+
 ## 依赖
 
 - Erlang/OTP 27 或更新版本、rebar3
@@ -61,3 +63,6 @@ scripts/release.sh
 
 行为变化必须同步更新文档。文档写当前行为和原因，不保留实现历史或任务状态。
 只有面向不同读者或独立主题时才新增页面，并在 `README.md` 中链接。
+文档与更新日志中英文同步维护：改 `docs/*.md`、`README.md`、`CHANGELOG.md` 时同时改 `docs/en/` 下的同名文件、`README.en.md`、`CHANGELOG.en.md`。
+
+控制台界面文案用中文原文作键：`t('原文')` / `tk('原文')`，英文译文放 `web/src/i18n/en/*.ts`；`npm test` 会检查漏包的中文与缺失的译文（见 `web/src/i18n/index.ts` 开头的说明）。

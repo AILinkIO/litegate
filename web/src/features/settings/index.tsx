@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Eraser, RotateCcw } from 'lucide-react'
 import { toast } from 'sonner'
+import { t, tk } from '@/i18n'
 import { api, seg, type Setting, type StoreStatus } from '@/lib/api'
 import { fmtBytes, fmtInt, fmtMs, fmtTime } from '@/lib/format'
 import { useGet, useInvalidate } from '@/lib/query'
@@ -8,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -16,14 +18,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { PageHeader } from '@/components/page'
 import { ErrorAlert } from '@/components/query-state'
 import { AutoBackupCard, ConfigBackup } from './backup'
-import { DESCRIPTIONS, GROUPS } from './descriptions'
+import { CHOICES, DESCRIPTIONS, GROUPS } from './descriptions'
 
 const CASK: Record<string, string> = {
-  logs: '请求日志', msgs: '对话内容', idx: '日志索引', usage: '用量汇总', search: '对话全文索引',
-  cache: '响应缓存', responses: 'Responses 会话', alerts: '告警通知记录', sessions: '会话汇总',
+  logs: tk('请求日志'), msgs: tk('对话内容'), idx: tk('日志索引'), usage: tk('用量汇总'), search: tk('对话全文索引'),
+  cache: tk('响应缓存'), responses: tk('Responses 会话'), alerts: tk('告警通知记录'), sessions: tk('会话汇总'),
 }
 
-const SOURCE: Record<Setting['source'], string> = { runtime: '控制台', env: '环境变量', app: 'sys.config', default: '默认值' }
+const SOURCE: Record<Setting['source'], string> = { runtime: tk('控制台'), env: tk('环境变量@@source'), app: 'sys.config', default: tk('默认值') }
 
 export function Settings() {
   const q = useGet<Setting[]>('/settings')
@@ -32,7 +34,7 @@ export function Settings() {
   const save = async (key: string, value: Setting['value'] | null) => {
     try {
       await api.put(`/settings/${seg(key)}`, { value })
-      toast.success(value === null ? '已恢复' : '已保存')
+      toast.success(value === null ? t('已恢复') : t('已保存'))
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -42,17 +44,17 @@ export function Settings() {
 
   const byKey = new Map((q.data ?? []).map((s) => [s.key, s]))
   const grouped = new Set(GROUPS.flatMap((g) => g.keys))
-  const groups = [...GROUPS, { title: '其他', keys: (q.data ?? []).map((s) => s.key).filter((k) => !grouped.has(k)) }]
+  const groups = [...GROUPS, { title: tk('其他'), keys: (q.data ?? []).map((s) => s.key).filter((k) => !grouped.has(k)) }]
 
   return (
     <>
-      <PageHeader title='运行参数' subtitle='在控制台修改的值立即生效，优先级高于环境变量与 sys.config；灰色项需修改配置后重启' />
+      <PageHeader title={t('运行参数')} subtitle={t('在控制台修改的值立即生效，优先级高于环境变量与 sys.config；灰色项需修改配置后重启')} />
       <Tabs defaultValue='params'>
         <TabsList className='mb-4'>
-          <TabsTrigger value='params'>参数</TabsTrigger>
-          <TabsTrigger value='store'>数据存储</TabsTrigger>
-          <TabsTrigger value='otlp'>链路导出</TabsTrigger>
-          <TabsTrigger value='backup'>备份与迁移</TabsTrigger>
+          <TabsTrigger value='params'>{t('参数@@tab')}</TabsTrigger>
+          <TabsTrigger value='store'>{t('数据存储')}</TabsTrigger>
+          <TabsTrigger value='otlp'>{t('链路导出')}</TabsTrigger>
+          <TabsTrigger value='backup'>{t('备份与迁移')}</TabsTrigger>
         </TabsList>
         <TabsContent value='params' className='grid gap-6'>
           {q.error && <ErrorAlert message={q.error.message} />}
@@ -62,17 +64,17 @@ export function Settings() {
             if (!items.length) return null
             return (
               <section key={g.title}>
-                <h2 className='mb-2 text-sm font-semibold text-subtle-foreground'>{g.title}</h2>
+                <h2 className='mb-2 text-sm font-semibold text-subtle-foreground'>{t(g.title)}</h2>
                 <div className='overflow-hidden rounded-xl border bg-card'>
                   {items.map((s, i) => (
                     <div key={s.key} className={cn('flex flex-wrap items-center gap-x-6 gap-y-2 px-5 py-3', i > 0 && 'border-t', !s.editable && 'opacity-60')}>
                       <div className='min-w-0 flex-1 basis-80'>
                         <div className='flex items-center gap-2'>
                           <code className='text-[13px] font-medium'>{s.key}</code>
-                          <Badge variant={s.source === 'runtime' ? 'info' : 'muted'}>{SOURCE[s.source]}</Badge>
+                          <Badge variant={s.source === 'runtime' ? 'info' : 'muted'}>{t(SOURCE[s.source])}</Badge>
                         </div>
-                        {DESCRIPTIONS[s.key] && <p className='mt-0.5 text-xs text-muted-foreground'>{DESCRIPTIONS[s.key]}</p>}
-                        <p className='text-xs text-muted-foreground'>默认 <code>{String(s.default) || '（空）'}</code></p>
+                        {DESCRIPTIONS[s.key] && <p className='mt-0.5 text-xs text-muted-foreground'>{t(DESCRIPTIONS[s.key])}</p>}
+                        <p className='text-xs text-muted-foreground'>{t('默认')} <code>{String(s.default) || t('（空）')}</code></p>
                       </div>
                       <div className='flex items-center gap-1'>
                         {/* key 含值：保存后重新挂载编辑器，丢弃未提交的输入 */}
@@ -81,9 +83,9 @@ export function Settings() {
                           {s.editable && s.source === 'runtime' && (
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <Button variant='ghost' size='icon' aria-label='撤销控制台设置' onClick={() => save(s.key, null)}><RotateCcw /></Button>
+                                <Button variant='ghost' size='icon' aria-label={t('撤销控制台设置')} onClick={() => save(s.key, null)}><RotateCcw /></Button>
                               </TooltipTrigger>
-                              <TooltipContent>撤销控制台设置</TooltipContent>
+                              <TooltipContent>{t('撤销控制台设置')}</TooltipContent>
                             </Tooltip>
                           )}
                         </span>
@@ -107,6 +109,13 @@ function ValueEditor({ s, onSave }: { s: Setting; onSave: (v: Setting['value']) 
   const [text, setText] = useState(String(s.value))
   if (!s.editable) return <code className='text-sm'>{String(s.value)}</code>
   if (typeof s.default === 'boolean') return <Switch checked={s.value === true} onCheckedChange={(v) => onSave(v)} />
+  const choices = CHOICES[s.key]
+  if (choices) return (
+    <Select value={String(s.value)} onValueChange={(v) => v !== String(s.value) && onSave(v)}>
+      <SelectTrigger className='w-40'><SelectValue /></SelectTrigger>
+      <SelectContent>{choices.map((c) => <SelectItem key={c.value} value={c.value}>{t(c.label)}</SelectItem>)}</SelectContent>
+    </Select>
+  )
   const commit = () => {
     if (text === String(s.value)) return
     onSave(typeof s.default === 'number' ? Number(text) : text)
@@ -126,7 +135,7 @@ function StoreCard() {
     setBusy(true)
     try {
       const r = await api.post<NonNullable<StoreStatus['cleanup']>>('/store/cleanup')
-      toast.success(`清理完成：删除 ${fmtInt(r.logs)} 条日志、${fmtInt(r.usage)} 条用量汇总`)
+      toast.success(t('清理完成：删除 {logs} 条日志、{usage} 条用量汇总', { logs: fmtInt(r.logs), usage: fmtInt(r.usage) }))
       await invalidate('/store')
     } catch (e) {
       toast.error((e as Error).message)
@@ -137,31 +146,33 @@ function StoreCard() {
   return (
     <div className='rounded-xl border bg-card'>
       <div className='flex items-center justify-between px-5 py-4'>
-        <div className='font-semibold'>数据存储</div>
-        <Button variant='outline' onClick={run} disabled={busy}><Eraser /> {busy ? '清理中…' : '立即清理'}</Button>
+        <div className='font-semibold'>{t('数据存储')}</div>
+        <Button variant='outline' onClick={run} disabled={busy}><Eraser /> {busy ? t('清理中…') : t('立即清理')}</Button>
       </div>
       <Table>
         <TableHeader>
           <TableRow className='[&>th]:h-9 [&>th]:text-xs [&>th]:text-muted-foreground'>
-            <TableHead className='ps-5'>数据</TableHead><TableHead className='text-end'>条数</TableHead>
-            <TableHead className='text-end'>磁盘占用</TableHead><TableHead className='pe-5'>空间回收</TableHead>
+            <TableHead className='ps-5'>{t('数据')}</TableHead><TableHead className='text-end'>{t('条数')}</TableHead>
+            <TableHead className='text-end'>{t('磁盘占用')}</TableHead><TableHead className='pe-5'>{t('空间回收')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {(q.data?.casks ?? []).map((k) => (
             <TableRow key={k.cask} className='num'>
-              <TableCell className='ps-5'>{CASK[k.cask] ?? k.cask}</TableCell>
+              <TableCell className='ps-5'>{CASK[k.cask] ? t(CASK[k.cask]) : k.cask}</TableCell>
               <TableCell className='text-end'>{fmtInt(k.keys)}</TableCell>
               <TableCell className='text-end'>{fmtBytes(k.bytes)}</TableCell>
-              <TableCell className='pe-5'>{k.needs_merge ? <Badge variant='warning'>待合并</Badge> : '—'}</TableCell>
+              <TableCell className='pe-5'>{k.needs_merge ? <Badge variant='warning'>{t('待合并')}</Badge> : '—'}</TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
       <p className='border-t px-5 py-3 text-sm text-muted-foreground'>
         {c
-          ? `最近清理：${fmtTime(c.at)}，删除日志 ${fmtInt(c.logs)} 条、索引 ${fmtInt(c.index)} 条、用量汇总 ${fmtInt(c.usage)} 条，耗时 ${fmtMs(c.duration_ms)}${c.merged.length ? `，已合并 ${c.merged.map((m) => CASK[m] ?? m).join('、')}` : ''}`
-          : '尚未运行清理（每天自动运行一次，保留期在「参数」中设置）'}
+          ? t('最近清理：{time}，删除日志 {logs} 条、索引 {index} 条、用量汇总 {usage} 条，耗时 {duration}', {
+              time: fmtTime(c.at), logs: fmtInt(c.logs), index: fmtInt(c.index), usage: fmtInt(c.usage), duration: fmtMs(c.duration_ms),
+            }) + (c.merged.length ? t('，已合并 {casks}', { casks: c.merged.map((m) => (CASK[m] ? t(CASK[m]) : m)).join(t('、')) }) : '')
+          : t('尚未运行清理（每天自动运行一次，保留期在「参数」中设置）')}
       </p>
     </div>
   )
@@ -178,7 +189,7 @@ function OtlpCard({ settings }: { settings: Setting[] | null }) {
     setBusy(kind)
     try {
       await api.post(kind === 'span' ? '/otlp/test' : '/otlp/test-metric')
-      toast.success(kind === 'span' ? '测试 span 已发送' : '测试 metric 已发送')
+      toast.success(kind === 'span' ? t('测试 span 已发送') : t('测试 metric 已发送'))
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -188,26 +199,26 @@ function OtlpCard({ settings }: { settings: Setting[] | null }) {
   return (
     <div className='rounded-xl border bg-card px-5 py-4'>
       <div className='mb-2 flex items-center gap-2'>
-        <span className='font-semibold'>链路导出（OTLP）</span>
-        <Badge variant={enabled ? 'success' : 'muted'}>{enabled ? '已开启' : '未开启'}</Badge>
-        <Badge variant={metricsEnabled ? 'success' : 'muted'}>{metricsEnabled ? '指标已开启' : '指标未开启'}</Badge>
+        <span className='font-semibold'>{t('链路导出（OTLP）')}</span>
+        <Badge variant={enabled ? 'success' : 'muted'}>{enabled ? t('已开启') : t('未开启')}</Badge>
+        <Badge variant={metricsEnabled ? 'success' : 'muted'}>{metricsEnabled ? t('指标已开启') : t('指标未开启')}</Badge>
         <span className='ms-auto flex gap-2'>
           <Button variant='outline' onClick={() => test('span')} disabled={busy !== null || !endpoint}>
-            {busy === 'span' ? '发送中…' : '发送测试 span'}
+            {busy === 'span' ? t('发送中…') : t('发送测试 span')}
           </Button>
           <Button variant='outline' onClick={() => test('metric')} disabled={busy !== null || !endpoint}>
-            {busy === 'metric' ? '发送中…' : '发送测试 metric'}
+            {busy === 'metric' ? t('发送中…') : t('发送测试 metric')}
           </Button>
         </span>
       </div>
       <p className='text-sm text-muted-foreground'>
-        每个请求导出一条 trace：父 span 为请求，每次上游尝试（含失败与回退）一个子 span，带 token 用量与费用。
-        打开 otlp_metrics_enabled 后另按周期把 /metrics 同源的指标推到同端点的 /v1/metrics。
-        在「参数」中设置 otlp_endpoint、otlp_headers 后打开 otlp_enabled。Langfuse：端点填
-        <code className='mx-1 text-foreground'>https://&lt;host&gt;/api/public/otel</code>，请求头填
-        <code className='mx-1 text-foreground'>Authorization=Basic%20&lt;base64(公钥:私钥)&gt;</code>。
+        {t('每个请求导出一条 trace：父 span 为请求，每次上游尝试（含失败与回退）一个子 span，带 token 用量与费用。')}
+        {t('打开 otlp_metrics_enabled 后另按周期把 /metrics 同源的指标推到同端点的 /v1/metrics。')}
+        {t('在「参数」中设置 otlp_endpoint、otlp_headers 后打开 otlp_enabled。Langfuse：端点填')}
+        <code className='mx-1 text-foreground'>https://&lt;host&gt;/api/public/otel</code>{t('，请求头填')}
+        <code className='mx-1 text-foreground'>{t('Authorization=Basic%20<base64(公钥:私钥)>')}</code>{t('。')}
       </p>
-      {endpoint && <p className='mt-2 text-sm'>当前端点 <code>{endpoint}</code></p>}
+      {endpoint && <p className='mt-2 text-sm'>{t('当前端点')} <code>{endpoint}</code></p>}
     </div>
   )
 }

@@ -16,7 +16,7 @@
 -module(lg_middleware).
 -behaviour(gen_server).
 
--export([start_link/0, impls/0, impl_info/0, hooks_for/2, reload/0, rescan/0, plugin_dir/0, chain/1, begin_run/2, has/2,
+-export([start_link/0, impls/0, impl_info/0, impl_info/1, hooks_for/2, reload/0, rescan/0, rescan/1, plugin_dir/0, chain/1, begin_run/2, has/2,
          request/2, event/2, response/2, stats/0, test/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -25,7 +25,9 @@
 -callback on_request(map(), map(), map()) -> continue | {ok, map()} | {ok, map(), term()} | {reject, pos_integer(), binary()}.
 -callback on_event(map(), map(), map()) -> continue | {ok, map()} | drop.
 -callback on_response(map(), map(), map()) -> continue | {ok, map()}.
--callback describe() -> #{title := binary(), description := binary(), options_example := map(), name => binary()}.
+%% en：可选的英文版（title / description / options_example，缺的键沿用默认），控制台为英文时使用
+-callback describe() -> #{title := binary(), description := binary(), options_example := map(), name => binary(),
+                          en => #{title => binary(), description => binary(), options_example => map()}}.
 %% 按配置决定启用哪些钩子（默认为模块导出的钩子）；同步钩子（on_request / on_response）的超时
 -callback hooks(map()) -> [on_request | on_event | on_response].
 -callback timeout(map()) -> pos_integer().
@@ -85,10 +87,22 @@ impl_name(M) ->
 %% @doc 实现的说明（控制台列出可选实现）：标题、说明、配置示例、默认点位与来源。
 -spec impl_info() -> [map()].
 impl_info() ->
-    [(M:describe())#{impl => N, hooks => exported_hooks(M),
+    impl_info(zh).
+
+%% @doc 同 impl_info/0，Lang 为 en 时用实现提供的英文说明（describe/0 的 en 键；没有时沿用原文）。
+-spec impl_info(zh | en) -> [map()].
+impl_info(Lang) ->
+    [(describe(M, Lang))#{impl => N, hooks => exported_hooks(M),
                      source => case Src of builtin -> builtin; env -> builtin; {plugin, _} -> plugin end,
                      file => case Src of {plugin, F} -> list_to_binary(F); _ -> null end}
      || {N, M, Src} <- lists:keysort(1, registry())].
+
+describe(M, Lang) ->
+    D = M:describe(),
+    case {Lang, maps:get(en, D, undefined)} of
+        {en, #{} = En} -> maps:merge(maps:remove(en, D), maps:with([title, description, options_example], En));
+        _ -> maps:remove(en, D)
+    end.
 
 exported_hooks(M) ->
     [H || H <- [on_request, on_event, on_response], erlang:function_exported(M, H, 3)].
@@ -126,7 +140,20 @@ plugin_dir() ->
 %% 返回每个文件的结果：loaded（是中间件实现）、library（加载了，但不是实现，如插件的辅助模块）、或 {error, 原因}。
 -spec rescan() -> #{dir := binary(), files := [map()]}.
 rescan() ->
-    gen_server:call(?MODULE, rescan, 60000).
+    rescan(zh).
+
+%% @doc 同 rescan/0，错误说明按语言（zh | en）给出。
+-spec rescan(zh | en) -> #{dir := binary(), files := [map()]}.
+rescan(Lang) ->
+    localize_report(gen_server:call(?MODULE, rescan, 60000), Lang).
+
+%% do_rescan/0 的错误结果同时带 message（中文）与 message_en，按语言留一份
+localize_report(#{files := Fs} = Report, Lang) ->
+    Report#{files := [F#{result := case R of
+                                       #{message_en := En} when Lang =:= en -> (maps:remove(message_en, R))#{message := En};
+                                       _ -> maps:remove(message_en, R)
+                                   end}
+                      || #{result := R} = F <- Fs]}.
 
 do_rescan() ->
     Dir = plugin_dir(),
@@ -137,7 +164,7 @@ do_rescan() ->
         [begin
              Mod = list_to_atom(filename:basename(B, ".beam")),
              R = case lists:member(Mod, Builtin) orelse code:which(Mod) =:= preloaded of
-                     true -> {error, <<"与网关自带模块同名"/utf8>>};
+                     true -> {error, <<"与网关自带模块同名"/utf8>>, <<"Same name as a module shipped with the gateway">>};
                      false ->
                          _ = code:soft_purge(Mod),
                          case code:load_abs(filename:rootname(B)) of
@@ -147,11 +174,12 @@ do_rescan() ->
                                          N = impl_name(Mod),
                                          case lists:keyfind(N, 1, [{impl_name(M), M} || M <- Builtin, is_impl(M)]) of
                                              false -> {loaded, N};
-                                             _ -> {error, <<"实现名与内置实现冲突："/utf8, N/binary>>}
+                                             _ -> {error, <<"实现名与内置实现冲突："/utf8, N/binary>>,
+                                                   <<"Implementation name conflicts with a built-in implementation: ", N/binary>>}
                                          end;
                                      false -> library
                                  end;
-                             {error, Why} -> {error, iolist_to_binary(io_lib:format("~p", [Why]))}
+                             {error, Why} -> {error, iolist_to_binary(io_lib:format("~p", [Why])), undefined}
                          end
                  end,
              {Mod, B, R}
@@ -162,7 +190,8 @@ do_rescan() ->
       files => [#{module => M, file => list_to_binary(F),
                   result => case R of {loaded, N} -> #{status => loaded, impl => N};
                                       library -> #{status => library};
-                                      {error, E} -> #{status => error, message => E} end}
+                                      {error, E, undefined} -> #{status => error, message => E};
+                                      {error, E, En} -> #{status => error, message => E, message_en => En} end}
                 || {M, F, R} <- Results]}.
 
 %% @doc 配置变化后重建调用链缓存。

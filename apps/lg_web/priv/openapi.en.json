@@ -1,0 +1,3876 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "LiteGate API",
+  "version": "1.3.2",
+  "description": "LiteGate LLM gateway: /v1/* are gateway endpoints (gateway API key); /api/* are console management endpoints (console session; no authentication when login is disabled)."
+ },
+ "tags": [
+  {
+   "name": "Gateway"
+  },
+  {
+   "name": "Playground"
+  },
+  {
+   "name": "Authentication"
+  },
+  {
+   "name": "Overview"
+  },
+  {
+   "name": "Model catalog"
+  },
+  {
+   "name": "Upstream credentials"
+  },
+  {
+   "name": "Routes"
+  },
+  {
+   "name": "API Key"
+  },
+  {
+   "name": "Limits & budgets"
+  },
+  {
+   "name": "Logs & usage"
+  },
+  {
+   "name": "Upstream health"
+  },
+  {
+   "name": "Subscription plans"
+  },
+  {
+   "name": "Alerts"
+  },
+  {
+   "name": "Settings & storage"
+  },
+  {
+   "name": "Config backup"
+  },
+  {
+   "name": "Users"
+  },
+  {
+   "name": "Operations"
+  }
+ ],
+ "components": {
+  "securitySchemes": {
+   "gatewayKey": {
+    "type": "http",
+    "scheme": "bearer",
+    "description": "Gateway API key (lgk-…); /v1/messages also accepts the x-api-key header"
+   },
+   "consoleSession": {
+    "type": "apiKey",
+    "in": "cookie",
+    "name": "lg_session",
+    "description": "Console login session; Authorization: Bearer lgs-… also works"
+   }
+  }
+ },
+ "security": [
+  {
+   "consoleSession": []
+  }
+ ],
+ "paths": {
+  "/v1/chat/completions": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "OpenAI Chat Completions",
+    "description": "Selects the upstream by model (route name); upstreams may speak the OpenAI or Anthropic protocol and are converted automatically. Streaming uses SSE. Request tags: header X-LiteGate-Tags: a,b (OpenAI / Responses formats may also use metadata.tags), merged with the key's default tags and used for per-tag usage and budgets; metadata.tags is not forwarded upstream.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "messages": [
+         {
+          "role": "user",
+          "content": "Hello"
+         }
+        ],
+        "max_tokens": 1024,
+        "stream": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "chatcmpl-1",
+         "object": "chat.completion",
+         "choices": [
+          {
+           "index": 0,
+           "message": {
+            "role": "assistant",
+            "content": "Hello!"
+           },
+           "finish_reason": "stop"
+          }
+         ],
+         "usage": {
+          "prompt_tokens": 8,
+          "completion_tokens": 4
+         }
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "When stream = true"
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated request tags (at most 8, each ≤ 64 characters, limited to A-Z a-z 0-9 _ . : / -)"
+     },
+     {
+      "name": "X-LiteGate-Session",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Session identifier (used for session affinity and for reusing rule decisions within a session); if absent, taken in turn from x-session-affinity, X-Claude-Code-Session-Id, session-id, or the body's prompt_cache_key / metadata.user_id; if none is present, derived from the key, model name, system prompt and first user message"
+     },
+     {
+      "name": "traceparent",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "W3C Trace Context (version 00); when OTLP export is enabled the gateway's spans join this trace"
+     },
+     {
+      "name": "X-LiteGate-Client",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Self-reported client tool name (≤ 32 characters, limited to A-Z a-z 0-9 _ . -); if absent, claude-code, codex, opencode, openai-sdk and anthropic-sdk are recognized from request headers, otherwise other"
+     }
+    ]
+   }
+  },
+  "/v1/messages": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "Anthropic Messages",
+    "description": "The key may be sent in x-api-key or Authorization: Bearer; anthropic-version / anthropic-beta are passed through to Anthropic upstreams. Request tags: header X-LiteGate-Tags: a,b (OpenAI / Responses formats may also use metadata.tags), merged with the key's default tags and used for per-tag usage and budgets; metadata.tags is not forwarded upstream.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "minimax",
+        "max_tokens": 1024,
+        "messages": [
+         {
+          "role": "user",
+          "content": "Hello"
+         }
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "msg_1",
+         "type": "message",
+         "role": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Hello!"
+          }
+         ],
+         "stop_reason": "end_turn",
+         "usage": {
+          "input_tokens": 8,
+          "output_tokens": 4
+         }
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "When stream = true"
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated request tags (at most 8, each ≤ 64 characters, limited to A-Z a-z 0-9 _ . : / -)"
+     },
+     {
+      "name": "X-LiteGate-Session",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Session identifier (used for session affinity and for reusing rule decisions within a session); if absent, taken in turn from x-session-affinity, X-Claude-Code-Session-Id, session-id, or the body's prompt_cache_key / metadata.user_id; if none is present, derived from the key, model name, system prompt and first user message"
+     },
+     {
+      "name": "traceparent",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "W3C Trace Context (version 00); when OTLP export is enabled the gateway's spans join this trace"
+     },
+     {
+      "name": "X-LiteGate-Client",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Self-reported client tool name (≤ 32 characters, limited to A-Z a-z 0-9 _ . -); if absent, claude-code, codex, opencode, openai-sdk and anthropic-sdk are recognized from request headers, otherwise other"
+     }
+    ]
+   }
+  },
+  "/v1/messages/count_tokens": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "Anthropic count_tokens",
+    "description": "Forwarded to an Anthropic-protocol upstream, not billed; when the route has no Anthropic-protocol target or the upstream does not support it (404 / 405 / 501), the count is estimated locally and the response carries the header x-litegate-estimated: true.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "minimax-anthropic",
+        "messages": [
+         {
+          "role": "user",
+          "content": "hello"
+         }
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "input_tokens": 9
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/v1/responses": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "OpenAI Responses",
+    "description": "Passed through to the upstream's native /responses when the credential has options.responses_api = true, otherwise converted to Chat Completions; previous_response_id history is expanded locally by the gateway. Request tags: header X-LiteGate-Tags: a,b (OpenAI / Responses formats may also use metadata.tags), merged with the key's default tags and used for per-tag usage and budgets; metadata.tags is not forwarded upstream.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "input": "Hello",
+        "max_output_tokens": 1024
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "resp_1",
+         "object": "response",
+         "status": "completed",
+         "output": [
+          {
+           "type": "message",
+           "role": "assistant",
+           "content": [
+            {
+             "type": "output_text",
+             "text": "Hello!"
+            }
+           ]
+          }
+         ],
+         "usage": {
+          "input_tokens": 8,
+          "output_tokens": 4
+         }
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "When stream = true"
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated request tags (at most 8, each ≤ 64 characters, limited to A-Z a-z 0-9 _ . : / -)"
+     },
+     {
+      "name": "X-LiteGate-Session",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Session identifier (used for session affinity and for reusing rule decisions within a session); if absent, taken in turn from x-session-affinity, X-Claude-Code-Session-Id, session-id, or the body's prompt_cache_key / metadata.user_id; if none is present, derived from the key, model name, system prompt and first user message"
+     },
+     {
+      "name": "traceparent",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "W3C Trace Context (version 00); when OTLP export is enabled the gateway's spans join this trace"
+     },
+     {
+      "name": "X-LiteGate-Client",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Self-reported client tool name (≤ 32 characters, limited to A-Z a-z 0-9 _ . -); if absent, claude-code, codex, opencode, openai-sdk and anthropic-sdk are recognized from request headers, otherwise other"
+     }
+    ]
+   }
+  },
+  "/v1/embeddings": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "OpenAI Embeddings",
+    "description": "Uses only openai-protocol targets. Request tags: header X-LiteGate-Tags: a,b (OpenAI / Responses formats may also use metadata.tags), merged with the key's default tags and used for per-tag usage and budgets; metadata.tags is not forwarded upstream.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "embed",
+        "input": [
+         "hello"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "object": "list",
+         "data": [
+          {
+           "object": "embedding",
+           "index": 0,
+           "embedding": [
+            0.01,
+            -0.02
+           ]
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated request tags (at most 8, each ≤ 64 characters, limited to A-Z a-z 0-9 _ . : / -)"
+     }
+    ]
+   }
+  },
+  "/v1/models": {
+   "get": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "List of callable models (routes)",
+    "description": "Wildcard routes are expanded by the catalog provider of their credentials.",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "object": "list",
+         "data": [
+          {
+           "id": "glm",
+           "object": "model",
+           "owned_by": "litegate"
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/v1/live": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "OpenAI Realtime WebRTC call",
+    "description": "Passes the multipart SDP and session through, replacing only session.model with the route's target model; uses only OpenAI credentials with responses_api enabled. The response Location is rewritten to /v1/live/{call_id}.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "multipart/form-data": {
+       "schema": {
+        "type": "object"
+       },
+       "example": "multipart form-data: sdp + session"
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Created; the body is the SDP answer and Location points to the sideband WebSocket"
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/v1/live/{callId}": {
+   "get": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "OpenAI Realtime sideband WebSocket",
+    "description": "Joins the matching upstream using the call id returned when the response was created via a WebRTC call; Realtime WebSocket frames are forwarded in both directions.",
+    "parameters": [
+     {
+      "name": "callId",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "101": {
+      "description": "WebSocket upgrade succeeded"
+     }
+    },
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ]
+   }
+  },
+  "/api/playground/chat": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Chat Completions format",
+    "description": "Called as the console admin (no gateway key needed) and goes through the full routing chain; response headers include x-request-id, x-litegate-target (credential name / upstream model, percent-encoded), x-litegate-attempts and x-litegate-cache.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "messages": [
+         {
+          "role": "user",
+          "content": "Hello"
+         }
+        ],
+        "max_tokens": 1024,
+        "stream": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "choices": []
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "When stream = true"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/messages": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Messages format",
+    "description": "Called as the console admin (no gateway key needed) and goes through the full routing chain; response headers include x-request-id, x-litegate-target (credential name / upstream model, percent-encoded), x-litegate-attempts and x-litegate-cache.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "minimax",
+        "max_tokens": 1024,
+        "messages": [
+         {
+          "role": "user",
+          "content": "Hello"
+         }
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "content": []
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "When stream = true"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/responses": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Responses format",
+    "description": "Called as the console admin (no gateway key needed) and goes through the full routing chain; response headers include x-request-id, x-litegate-target (credential name / upstream model, percent-encoded), x-litegate-attempts and x-litegate-cache.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "glm",
+        "input": "Hello"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "output": []
+        }
+       },
+       "text/event-stream": {
+        "schema": {
+         "type": "string"
+        },
+        "description": "When stream = true"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health": {
+   "get": {
+    "tags": [
+     "Operations"
+    ],
+    "summary": "Liveness check",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "status": "ok"
+        }
+       }
+      }
+     }
+    },
+    "429": {
+     "description": "Too many failed attempts, cooling down; Retry-After gives the number of seconds to wait",
+     "content": {
+      "application/json": {
+       "example": {
+        "error": {
+         "code": "rate_limited",
+         "message": "Too many attempts; retry after 1 seconds"
+        }
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/metrics": {
+   "get": {
+    "tags": [
+     "Operations"
+    ],
+    "summary": "Prometheus metrics",
+    "description": "When the setting metrics_token is non-empty, Authorization: Bearer <token> is required.",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": "# TYPE litegate_requests_total counter"
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/api/openapi.json": {
+   "get": {
+    "tags": [
+     "Operations"
+    ],
+    "summary": "This API document (OpenAPI 3.1)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "openapi": "3.1.0"
+        }
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/api/auth/login": {
+   "post": {
+    "tags": [
+     "Authentication"
+    ],
+    "summary": "Log in (when console_auth = true)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "username": "admin",
+        "password": "…"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "user": {
+          "id": "user_1",
+          "username": "admin",
+          "role": "admin"
+         },
+         "token": "lgs-…"
+        }
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/api/auth/logout": {
+   "post": {
+    "tags": [
+     "Authentication"
+    ],
+    "summary": "Log out",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/me": {
+   "get": {
+    "tags": [
+     "Authentication"
+    ],
+    "summary": "Current user",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "local",
+         "username": "admin",
+         "role": "admin",
+         "auth_enabled": false
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/password": {
+   "put": {
+    "tags": [
+     "Authentication"
+    ],
+    "summary": "Change your own password",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "password": "new-password"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/overview": {
+   "get": {
+    "tags": [
+     "Overview"
+    ],
+    "summary": "Dashboard overview (configuration counts, recent usage)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "routes": 3,
+         "credentials": 3
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/providers": {
+   "get": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "List providers",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "id": "zhipuai",
+          "name": "Zhipu AI",
+          "api": "https://open.bigmodel.cn/api/paas/v4",
+          "protocol": "openai"
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/models": {
+   "get": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "List models",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Provider id"
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Search by id / name / family"
+     },
+     {
+      "name": "source",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "synced | overridden | custom"
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Pagination offset"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Items per page (max 500)"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "items": [
+          {
+           "provider": "zhipuai",
+           "id": "glm-5.3-flash",
+           "cost": {
+            "input": 0.15,
+            "output": 0.5
+           }
+          }
+         ],
+         "total": 1
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/models/{provider}/{model}": {
+   "get": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "Model details (including user overrides)",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "model",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "Add / override model attributes (L1 override layer)",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "model",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "My models",
+        "cost": {
+         "input": 1,
+         "output": 2
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "Delete a user override",
+    "parameters": [
+     {
+      "name": "provider",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "model",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/sync": {
+   "get": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "Result of the latest models.dev sync",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "status": "ok",
+         "providers": 223,
+         "models": 8171
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "Sync models.dev now",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/catalog/import": {
+   "post": {
+    "tags": [
+     "Model catalog"
+    ],
+    "summary": "Import models.dev api.json (offline sync)",
+    "description": "Replaces the synced data (L0) as a whole, just like syncing models.dev; overrides and custom models are not affected. Every top-level value must be a provider with a models object, otherwise 400.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "openai": {
+         "name": "OpenAI",
+         "npm": "@ai-sdk/openai",
+         "models": {
+          "gpt-4o": {
+           "name": "GPT-4o",
+           "cost": {
+            "input": 2.5,
+            "output": 10
+           },
+           "limit": {
+            "context": 128000,
+            "output": 16384
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Import result",
+      "content": {
+       "application/json": {
+        "example": {
+         "providers": 1,
+         "models": 1,
+         "changed_models": 1
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Not in models.dev format"
+     }
+    }
+   }
+  },
+  "/api/credentials": {
+   "get": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "List credentials (only the last 4 characters of the key; plan credentials include plan_status)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "id": "cred_1",
+          "name": "GLM",
+          "protocol": "openai",
+          "api_key_hint": "...R4yn",
+          "plan_status": {
+           "state": "normal",
+           "windows": [
+            {
+             "name": "5h",
+             "used_pct": 1,
+             "resets_at": 1790241956075
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "Create a credential",
+    "description": "options: responses_api (boolean), responses_base_url (base URL for native Responses, set when it differs from Chat, e.g. Zhipu /api/v1), plan ({kind: minimax | glm | kimi, reserve_pct, window_caps: {window name: percent}}), balance ({kind: deepseek | moonshot | openrouter | newapi, alert_below}, balance lookup for pay-as-you-go keys), think_tags (\"split\"), extra_body (JSON object), prompt_cache (\"auto\", Anthropic protocol only), media_api (\"openai\" | \"minimax\"), max_concurrency (concurrency limit, 0 = unlimited); null removes the option.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "GLM",
+        "protocol": "openai",
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "api_key": "…",
+        "provider": "zhipuai",
+        "headers": {},
+        "options": {
+         "plan": {
+          "kind": "glm",
+          "reserve_pct": 10
+         },
+         "think_tags": "split",
+         "extra_body": {
+          "reasoning_split": true
+         },
+         "responses_api": false
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/credentials/from-provider": {
+   "post": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "Create from a catalog provider in one step",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "provider": "zhipuai",
+        "api_key": "…",
+        "name": "Zhipu"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/credentials/{id}": {
+   "get": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "Credential details",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "Update a credential (partial; api_key is kept if omitted)",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "Delete a credential (rejected while referenced by a route)",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/routes": {
+   "get": {
+    "tags": [
+     "Routes"
+    ],
+    "summary": "List routes (with route-level limits)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Routes"
+    ],
+    "summary": "Create a route",
+    "description": "A name ending in * is a wildcard route (any prefix, e.g. openrouter/*, claude-*; a lone * is the catch-all), and writing * as the target upstream model substitutes the remaining part. aliases are exact model names that also route to this route (globally unique). Matching order: route name → alias → longest-prefix wildcard. options: cache_ttl_s (response cache seconds), strategy (weighted | order | rotate | usage | smart | pace, ordering within the same priority), affinity (auto | session | off, session affinity), rules (list of rules: {when: {min_tokens, max_tokens, images, thinking, client, tags, hours, intent}, use: route name} or {when, skip: [credential id]}, at most 16), classifier (route name of the intent classification model); null removes the option.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "glm",
+        "targets": [
+         {
+          "credential": "cred_1",
+          "upstream_model": "glm-5.3-flash",
+          "model_ref": [
+           "zhipuai",
+           "glm-5.3-flash"
+          ],
+          "priority": 0,
+          "weight": 1
+         }
+        ],
+        "fallbacks": [
+         "minimax"
+        ],
+        "access": "all",
+        "options": {
+         "cache_ttl_s": 0,
+         "strategy": "smart",
+         "affinity": "auto",
+         "rules": [
+          {
+           "when": {
+            "min_tokens": 128000
+           },
+           "use": "kimi"
+          },
+          {
+           "when": {
+            "intent": "writing or fixing tests"
+           },
+           "use": "strong"
+          }
+         ],
+         "classifier": "glm-flash"
+        },
+        "aliases": [
+         "claude-sonnet-4-5"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/routes/{name}": {
+   "get": {
+    "tags": [
+     "Routes"
+    ],
+    "summary": "Route details",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "Routes"
+    ],
+    "summary": "Update a route",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "fallbacks": []
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Routes"
+    ],
+    "summary": "Delete a route",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/routes/{name}/capabilities": {
+   "get": {
+    "tags": [
+     "Routes"
+    ],
+    "summary": "Route capabilities: reachable upstreams and their reasoning, context window, max output and image input (Playground fills in parameters automatically)",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "description": "Route name, alias, or expanded wildcard name",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "route": "coding",
+         "targets": [
+          {
+           "credential": "cred_…",
+           "credential_name": "glm-cp",
+           "upstream_model": "glm-5.3-flash",
+           "via": [
+            "coding",
+            "glm",
+            "glm-5.3-flash"
+           ],
+           "known": true,
+           "reasoning": true,
+           "context": 1000000,
+           "output": 131072,
+           "images": true,
+           "locked_sampling": false
+          }
+         ],
+         "summary": {
+          "reasoning": "all",
+          "images": "some",
+          "context": 262144,
+          "output": 32768,
+          "locked_sampling": true,
+          "unknown": 0
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "No matching route"
+     }
+    }
+   }
+  },
+  "/api/keys": {
+   "get": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "List gateway keys (regular users only see their own; with limits and budgets)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "Create a gateway key (the full key is returned only once, in this response)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "ci-bot",
+        "allowed_routes": "all",
+        "max_tokens": 4096,
+        "expires_at": null,
+        "tags": [
+         "tool:claude-code"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "id": "key_1",
+         "key": "lgk-…"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/keys/{id}": {
+   "put": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "Update a key",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "API Key"
+    ],
+    "summary": "Delete a key",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/limits": {
+   "get": {
+    "tags": [
+     "Limits & budgets"
+    ],
+    "summary": "List limits",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "Limits & budgets"
+    ],
+    "summary": "Set limits (all three empty deletes them)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "scope": {
+         "type": "key_route",
+         "key_id": "key_1",
+         "route": "glm"
+        },
+        "rpm": 60,
+        "tpm": 100000,
+        "max_parallel": 4
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/budgets": {
+   "get": {
+    "tags": [
+     "Limits & budgets"
+    ],
+    "summary": "List budgets (with spend in the current period)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "Limits & budgets"
+    ],
+    "summary": "Set a budget (scope.type: key | user | tag; max_usd: null deletes it)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "scope": {
+         "type": "key",
+         "key_id": "key_1"
+        },
+        "period": "month",
+        "max_usd": 20
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/logs": {
+   "get": {
+    "tags": [
+     "Logs & usage"
+    ],
+    "summary": "Request logs (newest first, cursor pagination; full-text search when q is given)",
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Start timestamp in milliseconds"
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "End timestamp in milliseconds"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Number of items"
+     },
+     {
+      "name": "cursor",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "next_cursor returned by the previous page"
+     },
+     {
+      "name": "key_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter by key (playground means the console Playground)"
+     },
+     {
+      "name": "route",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter by route"
+     },
+     {
+      "name": "user_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter by user"
+     },
+     {
+      "name": "errors_only",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      },
+      "description": "Errors only"
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Full-text search over conversations"
+     },
+     {
+      "name": "tag",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter by tag"
+     },
+     {
+      "name": "client",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter by client tool"
+     },
+     {
+      "name": "session",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "Session identifier"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "items": [
+          {
+           "id": "fff9…",
+           "route": "glm",
+           "status": 200,
+           "usage": {
+            "input": 16,
+            "output": 124
+           },
+           "cost": 0,
+           "plan": true,
+           "plan_usd": 6e-05
+          }
+         ],
+         "next_cursor": null
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/logs/{id}": {
+   "get": {
+    "tags": [
+     "Logs & usage"
+    ],
+    "summary": "Log details (including conversation content)",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions": {
+   "get": {
+    "tags": [
+     "Logs & usage"
+    ],
+    "summary": "List sessions (most recently active first)",
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Latest activity from (milliseconds)"
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Latest activity to (milliseconds)"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Items per page"
+     },
+     {
+      "name": "cursor",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "next_cursor from the previous page"
+     },
+     {
+      "name": "key_id",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "Gateway key"
+     },
+     {
+      "name": "user_id",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "Users"
+     },
+     {
+      "name": "client",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      },
+      "description": "Client tool"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "items": [],
+         "next_cursor": null
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{id}": {
+   "get": {
+    "tags": [
+     "Logs & usage"
+    ],
+    "summary": "Session details (summary and requests in chronological order)",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/usage": {
+   "get": {
+    "tags": [
+     "Logs & usage"
+    ],
+    "summary": "Usage summary (aggregated by hour)",
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Start timestamp in milliseconds"
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "End timestamp in milliseconds"
+     },
+     {
+      "name": "group_by",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated: hour, day, key_id, user_id, route, credential, model, tag (grouping by tag counts tag rows; a request counts toward each of its tags)"
+     },
+     {
+      "name": "key_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter"
+     },
+     {
+      "name": "route",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter"
+     },
+     {
+      "name": "user_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter"
+     },
+     {
+      "name": "tag",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter by tag"
+     },
+     {
+      "name": "client",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filter by client tool; group_by also accepts client"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "route": "glm",
+          "requests": 2,
+          "errors": 0,
+          "input": 81,
+          "output": 279,
+          "cost": 0,
+          "plan_requests": 2,
+          "plan_usd": 0.0002,
+          "p50_ms": 3500,
+          "p95_ms": 4850
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/health": {
+   "get": {
+    "tags": [
+     "Upstream health"
+    ],
+    "summary": "Success rate, latency, cooldown and plan status of each target over the last 5 minutes, plus probe results",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/health/reset": {
+   "post": {
+    "tags": [
+     "Upstream health"
+    ],
+    "summary": "Clear cooldowns (clears all when no parameters are given)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "credential": "cred_1",
+        "upstream_model": "glm-5.3-flash"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/health/probe": {
+   "post": {
+    "tags": [
+     "Upstream health"
+    ],
+    "summary": "Probe now (optionally only the given credentials)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "credentials": [
+         "cred_1"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/plans": {
+   "get": {
+    "tags": [
+     "Subscription plans"
+    ],
+    "summary": "Quota status of plan credentials",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "plans": [
+          {
+           "credential": "cred_1",
+           "kind": "glm",
+           "state": "normal",
+           "level": "pro",
+           "windows": [
+            {
+             "name": "5h",
+             "used_pct": 1,
+             "resets_at": 1790241956075
+            }
+           ]
+          }
+         ],
+         "poll_interval_ms": 300000
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/plans/refresh": {
+   "post": {
+    "tags": [
+     "Subscription plans"
+    ],
+    "summary": "Query quotas now (optionally only the given credentials)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "credentials": [
+         "cred_1"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/channels": {
+   "get": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "List notification channels (address shows only the host and last 4 characters)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Create a channel (type: webhook | feishu | dingtalk | wecom; secret is the Feishu / DingTalk signing secret)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "Ops group",
+        "type": "feishu",
+        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/…",
+        "secret": "…"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/channels/{id}": {
+   "put": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Update a channel",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Delete a channel (also removed from rules)",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/channels/{id}/test": {
+   "post": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Send a test message",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": false,
+         "error": "HTTP 500: …"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/rules": {
+   "get": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "List alert rules",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Create a rule",
+    "description": "event: budget (threshold %, default 80), plan_quota (threshold %, default 90), upstream_down (consecutive failures, default 3), catalog_sync_failed.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "event": "plan_quota",
+        "threshold": 90,
+        "channels": [
+         "ch_1"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/rules/{id}": {
+   "put": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Update a rule",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "threshold": 95,
+        "enabled": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Delete a rule",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/alerts/history": {
+   "get": {
+    "tags": [
+     "Alerts"
+    ],
+    "summary": "Notification history (newest first)",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Number of items, default 100, max 500"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": [
+         {
+          "id": "alert_1",
+          "event": "plan_quota",
+          "level": "warning",
+          "title": "Plan quota alert: GLM",
+          "text": "5h window 92% used…",
+          "deliveries": [
+           {
+            "channel": "ch_1",
+            "status": "ok"
+           }
+          ]
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/settings": {
+   "get": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Effective values and sources of all settings (console / environment variable / sys.config / default)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/settings/{key}": {
+   "put": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Set a setting (value: null falls back to the lower layer)",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "value": 5
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/store": {
+   "get": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Interaction data store status (entries per cask, disk usage) and the latest cleanup result",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/backups": {
+   "get": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "List config backups and the latest result",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "backups": [],
+         "status": null,
+         "enabled": false
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Back up now (requires backup_passphrase to be set)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "file": "litegate-backup-20261014-120000.json",
+         "size": 1024
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/backups/{name}": {
+   "delete": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Delete the given backup file",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/store/cleanup": {
+   "post": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Clean up by retention period and merge now",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/config/export": {
+   "post": {
+    "tags": [
+     "Config backup"
+    ],
+    "summary": "Export configuration (upstream keys and alert channel addresses are encrypted with a passphrase)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "passphrase": "At least 8 characters"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "format": "litegate-config",
+         "version": 1
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/config/import": {
+   "post": {
+    "tags": [
+     "Config backup"
+    ],
+    "summary": "Import configuration (mode: merge | replace; dry_run only previews)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "data": {
+         "format": "litegate-config"
+        },
+        "passphrase": "…",
+        "mode": "merge",
+        "dry_run": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "credentials": {
+          "new": 0,
+          "overwritten": 3,
+          "deleted": 0
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/users": {
+   "get": {
+    "tags": [
+     "Users"
+    ],
+    "summary": "List users (used when console_auth = true)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Users"
+    ],
+    "summary": "Create a user",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "username": "alice",
+        "password": "…",
+        "role": "user"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/users/{id}": {
+   "put": {
+    "tags": [
+     "Users"
+    ],
+    "summary": "Update a user",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Users"
+    ],
+    "summary": "Delete a user",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/images/generations": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "Image generation (OpenAI format)",
+    "description": "Uses only openai-protocol targets; when the credential has options.media_api = minimax it is converted to MiniMax /image_generation (size is mapped to the closest aspect_ratio). Billed per image: catalog override cost.image (USD per image).",
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated request tags"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "img",
+        "prompt": "An orange cat",
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "url"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "created": 1790230177,
+         "data": [
+          {
+           "url": "https://…/1.png"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/audio/speech": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "Speech synthesis (OpenAI format, returns audio)",
+    "description": "Uses only openai-protocol targets; when the credential has options.media_api = minimax it is converted to MiniMax /t2a_v2 (the hex audio is decoded before returning, and OpenAI preset voice names are replaced with the MiniMax default voice). Billed per character: catalog override cost.tts (USD per million characters).",
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated request tags"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "tts",
+        "input": "Hello",
+        "voice": "tongtong",
+        "response_format": "wav",
+        "speed": 1
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Audio binary (content-type follows the format: audio/mpeg, audio/wav, etc.)",
+      "content": {
+       "audio/mpeg": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/systemone": {
+   "post": {
+    "tags": [
+     "Gateway"
+    ],
+    "summary": "Structured decision (TypeSafe System One, e.g. Bailian decision-model-preview)",
+    "description": "Returns, in a single forward pass, the results and probability distributions of classification (choice), yes/no (noul) and ordinal scoring (score), without generating text. Uses only openai-protocol targets and is passed through to the credential's {base_url}/systemone (Bailian's base_url is …/compatible-mode/v1, local Laya is http://host:port/v1); model is replaced with the upstream model and the model in the response is changed back to the requested route name; middleware is not applied. Billed per input token (catalog override cost.input). Simply point the TypeSafe SDK's base_url at the gateway.",
+    "security": [
+     {
+      "gatewayKey": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "X-LiteGate-Tags",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated request tags"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "decision-model-preview",
+        "state": {
+         "ticket_id": "T-1001",
+         "content": "The order was paid more than 24 hours ago but the payment still hasn't arrived"
+        },
+        "questions": {
+         "department": {
+          "type": "choice",
+          "instructions": "Which team should handle this?",
+          "criteria": {
+           "billing": "Payment, refund and billing issues",
+           "technical": "Product bugs and integration issues"
+          }
+         },
+         "escalate": {
+          "type": "noul",
+          "instructions": "Should the on-call engineer be notified immediately?"
+         },
+         "severity": {
+          "type": "score",
+          "instructions": "How severe is this issue?",
+          "criteria": [
+           "Minor issue",
+           "Some features affected",
+           "Core features unavailable",
+           "Severe business impact"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Answer, probability distribution and confidence for each question",
+      "content": {
+       "application/json": {
+        "example": {
+         "model": "decision-model-preview",
+         "request_id": "7b986c65-b223-9341-b5f0-b988e27ecaac",
+         "answers": {
+          "department": {
+           "type": "choice",
+           "choice": "billing",
+           "confidence": 0.88,
+           "probabilities": {
+            "billing": 0.94,
+            "technical": 0.06
+           }
+          },
+          "escalate": {
+           "type": "noul",
+           "noul": 0.99
+          },
+          "severity": {
+           "type": "score",
+           "score": 2.25,
+           "confidence": 0.91,
+           "probabilities": {
+            "0": 0.0,
+            "1": 0.01,
+            "2": 0.73,
+            "3": 0.26
+           }
+          }
+         },
+         "usage": {
+          "input_tokens": 125
+         },
+         "latency_ms": 52.9
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/images": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Image generation",
+    "description": "Called as the console admin (no gateway key needed) and goes through the full routing chain; response headers include x-request-id, x-litegate-target (credential name / upstream model, percent-encoded), x-litegate-attempts and x-litegate-cache.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "img",
+        "prompt": "An orange cat",
+        "n": 1,
+        "size": "1024x1024"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "data": [
+          {
+           "url": "https://…"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/speech": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Speech synthesis (returns audio)",
+    "description": "Called as the console admin (no gateway key needed) and goes through the full routing chain; response headers include x-request-id, x-litegate-target (credential name / upstream model, percent-encoded), x-litegate-attempts and x-litegate-cache.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "tts",
+        "input": "Hello",
+        "voice": "tongtong",
+        "response_format": "wav"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Audio binary",
+      "content": {
+       "audio/mpeg": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playground/systemone": {
+   "post": {
+    "tags": [
+     "Playground"
+    ],
+    "summary": "Structured decision (System One)",
+    "description": "Called as the console admin (no gateway key needed) and goes through the full routing chain; response headers include x-request-id, x-litegate-target (credential name / upstream model, percent-encoded), x-litegate-attempts and x-litegate-cache. The request body is the same as /v1/systemone (model, state, questions).",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "model": "decision-model-preview",
+        "state": "The order was paid more than 24 hours ago but the payment still hasn't arrived",
+        "questions": {
+         "department": {
+          "type": "choice",
+          "instructions": "Which team should handle this?",
+          "criteria": {
+           "billing": "Payment, refund and billing issues",
+           "technical": "Product bugs and integration issues"
+          }
+         },
+         "escalate": {
+          "type": "noul",
+          "instructions": "Should the on-call engineer be notified immediately?"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Answer, probability distribution and confidence for each question",
+      "content": {
+       "application/json": {
+        "example": {
+         "model": "decision-model-preview",
+         "answers": {
+          "department": {
+           "type": "choice",
+           "choice": "billing",
+           "confidence": 0.88,
+           "probabilities": {
+            "billing": 0.94,
+            "technical": 0.06
+           }
+          },
+          "escalate": {
+           "type": "noul",
+           "noul": 0.99
+          }
+         },
+         "usage": {
+          "input_tokens": 61
+         },
+         "latency_ms": 52.9
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/otlp/test": {
+   "post": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Send a test span to otlp_endpoint to check the trace export configuration",
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "example": {}
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Sent successfully",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "otlp_endpoint is not set"
+     },
+     "502": {
+      "description": "The collector rejected it or could not be reached"
+     }
+    }
+   }
+  },
+  "/api/otlp/test-metric": {
+   "post": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Send a test metric to /v1/metrics (otlp_endpoint must be set first)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "ok": true
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/balances": {
+   "get": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "Balances of pay-as-you-go keys (credentials with options.balance configured)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "balances": [
+          {
+           "credential": "cred_…",
+           "credential_name": "deepseek",
+           "kind": "deepseek",
+           "amount": 110.0,
+           "currency": "CNY",
+           "details": [
+            {
+             "currency": "CNY",
+             "amount": 110.0
+            }
+           ],
+           "alert_below": 10,
+           "fetched_at": 1791880000000,
+           "checked_at": 1791880000000,
+           "error": null
+          }
+         ],
+         "poll_interval_ms": 1800000
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/balances/refresh": {
+   "post": {
+    "tags": [
+     "Upstream credentials"
+    ],
+    "summary": "Query balances now (credentials: [Id] limits it to the given credentials)",
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "example": {
+        "credentials": [
+         "cred_…"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success; returns the latest balance list"
+     }
+    }
+   }
+  },
+  "/api/live/state": {
+   "get": {
+    "tags": [
+     "Upstream health"
+    ],
+    "summary": "Live routing view snapshot",
+    "description": "Per-route request / reroute / error counts and clients over the last 5 minutes, in-flight requests, and the live state of every candidate target of the selected route (?route=, defaults to the busiest one). The live event stream is GET /api/live/stream (text/event-stream, console identity): it first pushes a state event, then request_start, decision, attempt_start, attempt_end and request_end events.",
+    "parameters": [
+     {
+      "name": "route",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success"
+     }
+    }
+   }
+  },
+  "/api/middleware": {
+   "get": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "List gateway middleware (with call statistics) and available implementations",
+    "description": "Middleware runs at three points: on_request (after the request body is parsed, before routing), on_event (before a streaming frame is written to the client) and on_response (before a non-streaming reply is written to the client). If a hook errors or times out, the data passes through unchanged. impls lists the available implementations with their supported hooks and configuration examples.",
+    "responses": {
+     "200": {
+      "description": "Success"
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Create middleware",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "name": "Answer in English",
+        "impl": "system_prompt",
+        "options": {
+         "text": "Always answer in English."
+        },
+        "routes": "all",
+        "position": 0,
+        "enabled": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success"
+     },
+     "400": {
+      "description": "Invalid implementation name, route or configuration"
+     }
+    }
+   }
+  },
+  "/api/middleware/plugins/rescan": {
+   "post": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Rescan the plugin directory (loads *.beam and */ebin/*.beam; changed modules are hot-swapped)",
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "dir": "/var/lib/litegate/plugins",
+         "files": [
+          {
+           "module": "mw_block_models",
+           "file": "/var/lib/litegate/plugins/mw_block_models.beam",
+           "result": {
+            "status": "loaded",
+            "impl": "block_models"
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/middleware/test": {
+   "post": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Dry run: call on_request once on a sample request body with the given implementation and configuration (no routing, no upstream access)",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "example": {
+        "impl": "word_guard",
+        "options": {
+         "words": [
+          "example-word"
+         ],
+         "mode": "reject"
+        },
+        "format": "openai",
+        "body": {
+         "model": "fast",
+         "messages": [
+          {
+           "role": "user",
+           "content": "Hello"
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "example": {
+         "result": {
+          "kind": "continue"
+         },
+         "us": 35,
+         "timeout_ms": 250
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/middleware/{id}": {
+   "put": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Update middleware (the implementation cannot be changed)",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "example": {
+        "enabled": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success"
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Settings & storage"
+    ],
+    "summary": "Delete middleware",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success"
+     }
+    }
+   }
+  },
+  "/api/unfit": {
+   "get": {
+    "tags": [
+     "Upstream health"
+    ],
+    "summary": "Learned upstream parameter restrictions",
+    "description": "When an upstream rejects a parameter or usage with 400 / 422, the gateway records {credential, upstream model, feature} and rewrites later requests automatically. Features: temperature, top_p, thinking_off, enable_thinking_sync, prefill, output_config, json_schema.",
+    "responses": {
+     "200": {
+      "description": "Success"
+     }
+    }
+   }
+  },
+  "/api/unfit/forget": {
+   "post": {
+    "tags": [
+     "Upstream health"
+    ],
+    "summary": "Clear learned restrictions (with credential, upstream_model and feature only one entry is cleared, otherwise all)",
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "example": {
+        "credential": "cred_…",
+        "upstream_model": "kimi-for-coding",
+        "feature": "temperature"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success"
+     }
+    }
+   }
+  }
+ }
+}

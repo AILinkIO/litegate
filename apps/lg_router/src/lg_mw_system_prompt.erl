@@ -8,7 +8,10 @@
 describe() ->
     #{title => <<"追加系统提示"/utf8>>,
       description => <<"给每个请求追加一段系统提示，例如统一要求用中文回答"/utf8>>,
-      options_example => #{<<"text">> => <<"请始终用简体中文回答。"/utf8>>, <<"position">> => <<"append">>}}.
+      options_example => #{<<"text">> => <<"请始终用简体中文回答。"/utf8>>, <<"position">> => <<"append">>},
+      en => #{title => <<"Append system prompt">>,
+              description => <<"Append a system prompt to every request, e.g. require answers in a particular language">>,
+              options_example => #{<<"text">> => <<"Always answer in English.">>, <<"position">> => <<"append">>}}}.
 
 validate(#{<<"text">> := T} = O) when is_binary(T), T =/= <<>> ->
     case maps:get(<<"position">>, O, <<"append">>) of

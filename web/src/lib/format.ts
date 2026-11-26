@@ -1,11 +1,13 @@
 // 展示格式化
+import { locale, t } from '@/i18n'
+
 export function fmtTime(ms: number | null | undefined) {
   if (!ms) return '—'
-  return new Date(ms).toLocaleString('zh-CN', { hour12: false })
+  return new Date(ms).toLocaleString(locale(), { hour12: false })
 }
 
 export function fmtInt(n: number | null | undefined) {
-  return (n ?? 0).toLocaleString()
+  return (n ?? 0).toLocaleString(locale())
 }
 
 export function fmtTokens(n: number | null | undefined) {
@@ -13,7 +15,7 @@ export function fmtTokens(n: number | null | undefined) {
   if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`
   if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`
   if (v >= 1e4) return `${(v / 1e3).toFixed(1)}K`
-  return v.toLocaleString()
+  return v.toLocaleString(locale())
 }
 
 export function fmtCost(n: number | null | undefined) {
@@ -57,7 +59,7 @@ export function fmtBytes(n: number) {
 export function fmtUntil(ms: number | null | undefined, now = Date.now()) {
   if (!ms) return '—'
   const m = Math.max(0, Math.round((ms - now) / 60000))
-  if (m >= 1440) return `${Math.floor(m / 1440)}天${Math.floor((m % 1440) / 60)}小时`
-  if (m >= 60) return `${Math.floor(m / 60)}小时${m % 60}分`
-  return `${m}分`
+  if (m >= 1440) return t('{d}天{h}小时', { d: Math.floor(m / 1440), h: Math.floor((m % 1440) / 60) })
+  if (m >= 60) return t('{h}小时{m}分', { h: Math.floor(m / 60), m: m % 60 })
+  return t('{m}分', { m })
 }

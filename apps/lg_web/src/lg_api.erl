@@ -12,6 +12,7 @@
 -export([body/1, reply/3, result/3, ok_result/2, found/3, not_found/1, bad_request/2,
          err/2, qs/2, int_qs/2, page/2, default/2, group/2, clean/1, fmt/1]).
 -export([key_limits/2]).
+-export([lang/1, parse_lang/1, localize_live/2]).
 
 -define(COOKIE, <<"lg_session">>).
 %% 未启用登录时的本地管理员身份（不落库）
@@ -65,10 +66,15 @@ route(<<"POST">>, [<<"auth">>, <<"logout">>], Req) ->
     end,
     Req1 = cowboy_req:set_resp_cookie(?COOKIE, <<>>, Req, #{path => <<"/">>, max_age => 0}),
     reply(200, #{<<"ok">> => true}, Req1);
-%% ---- 接口文档（不涉密，无需登录）----
+%% ---- 接口文档（不涉密，无需登录）：Accept-Language: en 或 ?lang=en 时给英文版 ----
 route(<<"GET">>, [<<"openapi.json">>], Req) ->
-    case file:read_file(filename:join(code:priv_dir(lg_web), "openapi.json")) of
-        {ok, Doc} -> cowboy_req:reply(200, #{<<"content-type">> => <<"application/json">>}, Doc, Req);
+    File = case lang(Req) of
+               en -> "openapi.en.json";
+               zh -> "openapi.json"
+           end,
+    case file:read_file(filename:join(code:priv_dir(lg_web), File)) of
+        {ok, Doc} -> cowboy_req:reply(200, #{<<"content-type">> => <<"application/json">>,
+                                             <<"vary">> => <<"Accept-Language">>}, Doc, Req);
         {error, _} -> not_found(Req)
     end;
 route(Method, Path, Req) ->
@@ -216,7 +222,7 @@ handle(<<"GET">>, [<<"logs">>, Id], User, Req) ->
         {ok, Log} ->
             visible(Log, User) orelse not_found(Req),
             Msgs = case lg_store:messages(Id) of {ok, M} -> clean(M); not_found -> null end,
-            Narrative = try lg_narrate:lines(Log)
+            Narrative = try lg_narrate:lines(Log, lang(Req))
                         catch C:R:St ->
                                 logger:warning("narrate ~s failed: ~p:~p ~p", [Id, C, R, St]),
                                 []
@@ -240,7 +246,8 @@ handle(<<"GET">>, [<<"sessions">>, Sid], User, Req) ->
         {ok, S} ->
             visible(S, User) orelse not_found(Req),
             #{items := Logs, next_cursor := Next} = lg_store:logs(scope(User, #{session => Sid, limit => 500})),
-            Narrate = fun(L) -> try lg_narrate:lines(L) catch _:_ -> [] end end,
+            Lang = lang(Req),
+            Narrate = fun(L) -> try lg_narrate:lines(L, Lang) catch _:_ -> [] end end,
             reply(200, (clean(S))#{<<"logs">> => [(clean(L))#{narrative => Narrate(L)} || L <- lists:reverse(Logs)],
                                    <<"truncated">> => Next =/= null}, Req);
         not_found ->
@@ -385,14 +392,20 @@ not_found(Req) ->
 
 -spec bad_request(term(), cowboy_req:req()) -> no_return().
 bad_request(Reason, Req) ->
-    throw({reply, 400, err(<<"invalid_request">>, describe(Reason)), Req}).
+    throw({reply, 400, err(<<"invalid_request">>, describe(Reason, lang(Req))), Req}).
 
 err(Code, Msg) ->
     #{<<"error">> => #{<<"code">> => Code, <<"message">> => Msg}}.
 
-describe({unknown_fields, L}) ->
+describe({unknown_fields, L}, en) ->
+    iolist_to_binary([<<"Unknown top-level fields: ">>, lists:join(<<", ">>, L),
+                      <<" (extension settings such as rules/classifier belong under options)">>]);
+describe({unknown_fields, L}, zh) ->
     iolist_to_binary([<<"未知顶层字段: "/utf8>>, lists:join(<<", ">>, L),
                       <<"（rules/classifier 等扩展配置放在 options 下）"/utf8>>]);
+describe(R, _) -> describe(R).
+
+
 describe({missing, K}) -> <<"Missing field: ", K/binary>>;
 describe({invalid, K}) -> <<"Invalid field: ", K/binary>>;
 describe({in_use, By}) -> <<"In use by: ", (iolist_to_binary(lists:join(<<", ">>, By)))/binary>>;
@@ -413,6 +426,42 @@ describe({undecryptable_credential, Id}) -> <<"Cannot decrypt the API key of cre
 describe(R) -> fmt(R).
 
 fmt(R) -> unicode:characters_to_binary(io_lib:format("~0p", [R])).
+
+%% @doc 界面语言：查询参数 lang 优先（EventSource、直接打开的链接带不了请求头），其次 Accept-Language；
+%% 以 en 开头为英文，其余（含缺省）为中文。只看首选语言，不按 q 值排序。
+-spec lang(cowboy_req:req()) -> lg_narrate:lang().
+lang(Req) ->
+    case qs(<<"lang">>, cowboy_req:parse_qs(Req)) of
+        undefined -> parse_lang(cowboy_req:header(<<"accept-language">>, Req));
+        L -> parse_lang(L)
+    end.
+
+-spec parse_lang(binary() | undefined) -> lg_narrate:lang().
+parse_lang(V) when is_binary(V) ->
+    case string:lowercase(string:trim(V)) of
+        <<"en", _/binary>> -> en;
+        _ -> zh
+    end;
+parse_lang(_) ->
+    zh.
+
+%% @doc 实时视图数据按语言给出：叙述同时带 narrative（中文）与 narrative_en（英文）时选一份放进 narrative，
+%% 目标的套餐说明（note）按语言改写。用于 /api/live/state 与 SSE 的 state、request_end 事件。
+-spec localize_live(map(), lg_narrate:lang()) -> map().
+localize_live(#{targets := Ts, last := Last} = State, Lang) when is_list(Ts) ->
+    State#{targets := [case T of
+                           #{note := N} when is_binary(N) -> T#{note := lg_narrate:note(N, Lang)};
+                           _ -> T
+                       end || T <- Ts],
+           last := case Last of
+                       #{} -> pick_narrative(Last, Lang);
+                       _ -> Last
+                   end};
+localize_live(Data, Lang) when is_map(Data) ->
+    pick_narrative(Data, Lang).
+
+pick_narrative(#{narrative_en := En} = M, en) -> (maps:remove(narrative_en, M))#{narrative => En};
+pick_narrative(M, _) -> maps:remove(narrative_en, M).
 
 qs(K, Q) ->
     case lists:keyfind(K, 1, Q) of

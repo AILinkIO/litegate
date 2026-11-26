@@ -17,7 +17,7 @@
 -define(SCOPE, lg_live_pg).
 -define(GROUP, events).
 -define(ACTIVE, lg_live_active).     %% {RequestId, Map}
--define(STATS, lg_live_stats).       %% {{Route, Client, KeyName, Bucket}, Requests, Reroutes, Errors}；另存 {{last, Route}, Narrative, Ts}
+-define(STATS, lg_live_stats).       %% {{Route, Client, KeyName, Bucket}, Requests, Reroutes, Errors}；另存 {{last, Route}, Narrative | {Zh, En}, Ts}
 -define(DROPPED, lg_live_dropped).   %% {Pid, Count}
 -define(BUCKET_MS, 10000).
 -define(WINDOW_MS, 300000).
@@ -85,7 +85,8 @@ attempt_end(Id, Info) ->
     end,
     publish(attempt_end, Info#{request_id => Id}).
 
-%% @doc Info：route、client、key_name、status、attempts、error、usage、cost、duration_ms、ttft_ms、narrative。
+%% @doc Info：route、client、key_name、status、attempts、error、usage、cost、duration_ms、ttft_ms、narrative（中文）、
+%% narrative_en（英文，可选）。
 -spec request_end(binary() | undefined, map()) -> ok.
 request_end(undefined, _) -> ok;
 request_end(Id, Info) ->
@@ -102,8 +103,9 @@ request_end(Id, Info) ->
     K = {Route, Client, KeyName, Bucket},
     catch ets:update_counter(?STATS, K, [{2, 1}, {3, Reroute}, {4, Err}], {K, 0, 0, 0}),
     %% 每条路由最近一次请求的叙述（快照带上，页面打开时就有内容）
-    case maps:get(narrative, Info, []) of
-        [_ | _] = Lines -> catch ets:insert(?STATS, {{last, Route}, Lines, lg_time:now_ms()});
+    case {maps:get(narrative, Info, []), maps:get(narrative_en, Info, [])} of
+        {[_ | _] = Lines, [_ | _] = En} -> catch ets:insert(?STATS, {{last, Route}, {Lines, En}, lg_time:now_ms()});
+        {[_ | _] = Lines, _} -> catch ets:insert(?STATS, {{last, Route}, Lines, lg_time:now_ms()});
         _ -> ok
     end,
     publish(request_end, Info#{request_id => Id, route => Route, client => Client, key_name => KeyName}).
@@ -192,6 +194,7 @@ state(Opts) ->
                      _ -> targets(Selected, Active)
                  end,
       last => case ets:lookup(?STATS, {last, Selected}) of
+                  [{_, {N, En}, Ts}] -> #{route => Selected, narrative => N, narrative_en => En, ts => Ts};
                   [{_, N, Ts}] -> #{route => Selected, narrative => N, ts => Ts};
                   [] -> null
               end,

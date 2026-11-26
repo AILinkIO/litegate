@@ -1,6 +1,7 @@
 %% @doc 实时事件流（SSE）：GET /api/live/stream，控制台身份鉴权。
 %%
 %% 连接后先推一条 state（快照，可带 ?route= 选择路由），之后推 lg_live 的事件（event 为事件类型，data 为 JSON）；
+%% 决策叙述与套餐说明按连接的语言给出（?lang=en，缺省看 Accept-Language，见 lg_api:lang/1）；
 %% 每 15 秒一条注释帧保活。订阅进程被丢弃过事件时，下一条事件的 data 带 dropped 计数。
 -module(lg_web_live).
 -behaviour(cowboy_loop).
@@ -20,9 +21,10 @@ init(Req0, _State) ->
                                                  <<"cache-control">> => <<"no-cache">>,
                                                  <<"x-accel-buffering">> => <<"no">>}, Req0),
             ok = lg_live:subscribe(),
-            send(Req, <<"state">>, lg_live:state(opts(Route))),
+            Lang = lg_api:lang(Req0),
+            send(Req, <<"state">>, lg_api:localize_live(lg_live:state(opts(Route)), Lang)),
             erlang:send_after(?KEEPALIVE_MS, self(), keepalive),
-            {cowboy_loop, Req, #{route => Route}};
+            {cowboy_loop, Req, #{route => Route, lang => Lang}};
         {error, Status, Msg} ->
             Req = cowboy_req:reply(Status, #{<<"content-type">> => <<"application/json">>},
                                    json:encode(#{<<"error">> => #{<<"message">> => Msg}}), Req0),
@@ -34,7 +36,7 @@ info({lg_live, #{type := Type, data := Data} = Ev}, Req, S) ->
                   0 -> Data;
                   N -> Data#{dropped => N}
               end,
-    send(Req, atom_to_binary(Type), Payload#{ts => maps:get(ts, Ev)}),
+    send(Req, atom_to_binary(Type), lg_api:localize_live(Payload#{ts => maps:get(ts, Ev)}, maps:get(lang, S, zh))),
     {ok, Req, S};
 info(keepalive, Req, S) ->
     cowboy_req:stream_body(<<": keepalive\n\n">>, nofin, Req),

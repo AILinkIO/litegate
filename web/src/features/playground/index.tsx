@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, Eraser, ImagePlus, Square, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { t } from '@/i18n'
 import { api, seg, type LogEntry, type Route, type RouteCaps } from '@/lib/api'
 import { fmtTokens } from '@/lib/format'
 import { useGet } from '@/lib/query'
@@ -15,7 +16,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { AssistantTurn, CapsCard, QuestionsEditor } from './playground-parts'
 import { AutoTextarea } from './chat-parts'
 import {
-  applyCaps, applyEvent, BUDGET, buildBody, curlFor, DECISION_SUGGESTIONS, FORMATS, forStorage, readImage, STORE,
+  applyCaps, applyEvent, BUDGET, buildBody, curlFor, DECISION_SUGGESTIONS, FORMATS, forStorage, readImage, STOPPED, STORE,
   isChat, loadSaved, parseSync, questionsError, SUGGESTIONS,
   type Effort, type Format, type Meta, type Settings, type Turn,
 } from './playground-model'
@@ -67,7 +68,7 @@ export function Playground() {
       const urls = await Promise.all(imgs.map(readImage))
       setAttachments((a) => [...a, ...urls].slice(0, 8))
     } catch {
-      toast.error('图片读取失败')
+      toast.error(t('图片读取失败'))
     }
   }
 
@@ -114,7 +115,8 @@ export function Playground() {
       const isSse = res.headers.get('content-type')?.includes('text/event-stream')
       if (res.ok && format === 'speech') {
         const blob = await res.blob()
-        updateLast((t) => ({ ...t, meta, pending: false, audio: URL.createObjectURL(blob), raw: `[${blob.type}，${blob.size} 字节]` }))
+        const info = `[${t('{type}，{n} 字节', { type: blob.type, n: blob.size })}]`
+        updateLast((t) => ({ ...t, meta, pending: false, audio: URL.createObjectURL(blob), raw: info }))
       } else if (res.ok && format === 'systemone') {
         const txt = await res.text()
         const j = JSON.parse(txt)
@@ -166,7 +168,7 @@ export function Playground() {
       }
     } catch (e) {
       const stopped = (e as Error).name === 'AbortError'
-      updateLast((t) => ({ ...t, pending: false, error: stopped ? '已停止' : (e as Error).message }))
+      updateLast((t) => ({ ...t, pending: false, error: stopped ? STOPPED : (e as Error).message }))
     } finally {
       abort.current = null
     }
@@ -176,51 +178,51 @@ export function Playground() {
   const copyCurl = async (body: unknown) => {
     try {
       await navigator.clipboard.writeText(curlFor(s.format, body))
-      toast.success('已复制（请把 $LITEGATE_API_KEY 换成网关 Key）')
+      toast.success(t('已复制（请把 $LITEGATE_API_KEY 换成网关 Key）'))
     } catch {
-      toast.error('复制失败')
+      toast.error(t('复制失败'))
     }
   }
 
   const routeNames = (routes.data ?? []).filter((r) => r.enabled).map((r) => r.name)
   const sum = caps.data?.summary
   const overLimit = !!sum?.output && Number(s.maxTokens) > sum.output
-  const effortHint = sum?.reasoning === 'none' ? '该路由的模型不支持推理'
-    : sum?.reasoning === 'some' ? '部分上游不支持推理，会忽略此参数'
-    : s.format === 'messages' && s.effort ? `thinking 预算 ${BUDGET[s.effort]} token` : undefined
+  const effortHint = sum?.reasoning === 'none' ? t('该路由的模型不支持推理')
+    : sum?.reasoning === 'some' ? t('部分上游不支持推理，会忽略此参数')
+    : s.format === 'messages' && s.effort ? t('thinking 预算 {n} token', { n: BUDGET[s.effort] }) : undefined
   const canAttach = isChat(s.format)
   const qErr = s.format === 'systemone' ? questionsError(s.questions) : undefined
 
   return (
     <>
-      <PageHeader title='Playground' subtitle='以控制台身份走完整路由链路调试模型'
-        actions={<Button variant='ghost' disabled={busy || turns.length === 0} onClick={() => { setTurns([]); setRaw(null) }}><Eraser /> 清空对话</Button>} />
+      <PageHeader title='Playground' subtitle={t('以控制台身份走完整路由链路调试模型')}
+        actions={<Button variant='ghost' disabled={busy || turns.length === 0} onClick={() => { setTurns([]); setRaw(null) }}><Eraser /> {t('清空对话')}</Button>} />
       <div className='grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]'>
         <div className='grid h-fit gap-4 rounded-xl border bg-card p-4'>
-          <Field label='模型（路由名）' required hint='通配路由请填完整模型名，如 openrouter/xxx'>
-            <Combobox mono allowCustom value={s.route || null} onChange={(v) => set('route', v ?? '')} placeholder='选择或输入'
+          <Field label={t('模型（路由名）')} required hint={t('通配路由请填完整模型名，如 openrouter/xxx')}>
+            <Combobox mono allowCustom value={s.route || null} onChange={(v) => set('route', v ?? '')} placeholder={t('选择或输入')}
               options={routeNames.map((n) => ({ value: n, label: n }))} />
           </Field>
           {s.route && isChat(s.format) && <CapsCard caps={caps.data} loading={caps.isLoading} error={!!caps.error} />}
-          <Field label='接口格式'>
+          <Field label={t('接口格式')}>
             <SimpleSelect value={s.format} onChange={(v) => set('format', v as Format)}
-              options={Object.entries(FORMATS).map(([k, f]) => ({ value: k, label: f.label }))} />
+              options={Object.entries(FORMATS).map(([k, f]) => ({ value: k, label: t(f.label) }))} />
           </Field>
           {s.format === 'images' && (
             <div className='grid grid-cols-[1fr_72px] gap-2'>
-              <Field label='尺寸'>
+              <Field label={t('尺寸')}>
                 <SimpleSelect value={s.size} onChange={(v) => set('size', v)}
                   options={['1024x1024', '1792x1024', '1024x1792', '1536x1024', '1024x1536'].map((x) => ({ value: x, label: x }))} />
               </Field>
-              <Field label='张数'>
+              <Field label={t('张数')}>
                 <SimpleSelect value={s.n} onChange={(v) => set('n', v)} options={['1', '2', '3', '4'].map((x) => ({ value: x, label: x }))} />
               </Field>
             </div>
           )}
           {s.format === 'speech' && (
             <div className='grid grid-cols-[1fr_80px] gap-2'>
-              <Field label='音色' hint='如 tongtong；留空用默认'><Input value={s.voice} onChange={(e) => set('voice', e.target.value)} /></Field>
-              <Field label='格式'>
+              <Field label={t('音色')} hint={t('如 tongtong；留空用默认')}><Input value={s.voice} onChange={(e) => set('voice', e.target.value)} /></Field>
+              <Field label={t('格式')}>
                 <SimpleSelect value={s.audioFormat} onChange={(v) => set('audioFormat', v)} options={['mp3', 'wav', 'flac'].map((x) => ({ value: x, label: x }))} />
               </Field>
             </div>
@@ -228,21 +230,21 @@ export function Playground() {
           {s.format === 'systemone' && <QuestionsEditor value={s.questions} onChange={(v) => set('questions', v)} error={qErr} />}
           {isChat(s.format) && (
             <>
-              <Field label='系统提示'><Textarea rows={3} value={s.system} onChange={(e) => set('system', e.target.value)} /></Field>
+              <Field label={t('系统提示')}><Textarea rows={3} value={s.system} onChange={(e) => set('system', e.target.value)} /></Field>
               <div className='grid grid-cols-2 gap-2'>
-                <Field label='temperature' hint={sum?.locked_sampling ? '部分上游锁定采样，网关会去掉' : undefined}>
-                  <Input value={s.temperature} placeholder='默认' onChange={(e) => set('temperature', e.target.value)} />
+                <Field label='temperature' hint={sum?.locked_sampling ? t('部分上游锁定采样，网关会去掉') : undefined}>
+                  <Input value={s.temperature} placeholder={t('默认')} onChange={(e) => set('temperature', e.target.value)} />
                 </Field>
-                <Field label='最大输出' error={overLimit ? `超过上限 ${fmtTokens(sum!.output!)}` : undefined}
-                  hint={sum?.output ? `上限 ${fmtTokens(sum.output)}` : undefined}>
+                <Field label={t('最大输出')} error={overLimit ? t('超过上限 {n}', { n: fmtTokens(sum!.output!) }) : undefined}
+                  hint={sum?.output ? t('上限 {n}', { n: fmtTokens(sum.output) }) : undefined}>
                   <Input value={s.maxTokens} onChange={(e) => set('maxTokens', e.target.value)} />
                 </Field>
               </div>
-              <Field label='推理强度' hint={effortHint}>
+              <Field label={t('推理强度')} hint={effortHint}>
                 <SimpleSelect value={s.effort} onChange={(v) => set('effort', v as Effort)} disabled={sum?.reasoning === 'none'}
-                  options={[{ value: '', label: '不指定' }, { value: 'low', label: 'low' }, { value: 'medium', label: 'medium' }, { value: 'high', label: 'high' }]} />
+                  options={[{ value: '', label: t('不指定') }, { value: 'low', label: 'low' }, { value: 'medium', label: 'medium' }, { value: 'high', label: 'high' }]} />
               </Field>
-              <label className='flex items-center gap-2 text-sm'><Switch checked={s.stream} onCheckedChange={(v) => set('stream', v)} /> 流式输出</label>
+              <label className='flex items-center gap-2 text-sm'><Switch checked={s.stream} onCheckedChange={(v) => set('stream', v)} /> {t('流式输出')}</label>
             </>
           )}
         </div>
@@ -253,38 +255,38 @@ export function Playground() {
             <div ref={content} className='flex min-h-full flex-col'>
             {turns.length === 0 ? (
               <div className='mx-auto flex max-w-3xl flex-1 flex-col items-center justify-center gap-4 py-12 text-center'>
-                <p className='text-base leading-relaxed'>{s.route ? <>向 <span className='font-mono'>{s.route}</span> 发一条消息试试</> : '先在左侧选择模型（路由），再开始对话'}</p>
+                <p className='text-base leading-relaxed'>{s.route ? <>{t('向 {route} 发一条消息试试').split('{route}')[0]}<span className='font-mono'>{s.route}</span>{t('向 {route} 发一条消息试试').split('{route}')[1]}</> : t('先在左侧选择模型（路由），再开始对话')}</p>
                 <p className='text-xs text-muted-foreground'>
-                  {s.format === 'systemone' ? '输入待判断的内容（state），决策模型按左侧问题表一次作答，返回每道题的结果与概率'
-                    : '请求走完整的网关路由链路，回答下方会显示命中的上游、耗时、用量与路由决策'}
+                  {s.format === 'systemone' ? t('输入待判断的内容（state），决策模型按左侧问题表一次作答，返回每道题的结果与概率')
+                    : t('请求走完整的网关路由链路，回答下方会显示命中的上游、耗时、用量与路由决策')}
                 </p>
                 {s.route && (isChat(s.format) || s.format === 'systemone') && (
                   <div className='flex flex-wrap justify-center gap-2'>
                     {(s.format === 'systemone' ? DECISION_SUGGESTIONS : SUGGESTIONS).map((q) => (
-                      <button key={q} type='button' onClick={() => setInput(q)}
-                        className='rounded-full border bg-background px-3 py-1.5 text-sm hover:bg-muted'>{q}</button>
+                      <button key={q} type='button' onClick={() => setInput(t(q))}
+                        className='rounded-full border bg-background px-3 py-1.5 text-sm hover:bg-muted'>{t(q)}</button>
                     ))}
                   </div>
                 )}
               </div>
             ) : (
               <div className='mx-auto flex w-full max-w-3xl flex-col gap-4 py-5'>
-                {turns.map((t, i) => t.role === 'user' ? (
+                {turns.map((turn, i) => turn.role === 'user' ? (
                   <div key={i} className='flex max-w-[85%] flex-col items-end gap-1.5 self-end'>
-                    {!!t.attachments?.length && (
+                    {!!turn.attachments?.length && (
                       <div className='flex flex-wrap justify-end gap-1.5'>
-                        {t.attachments.map((u, j) => <img key={j} src={u} alt={`图片 ${j + 1}`} className='h-24 max-w-40 rounded-lg border object-cover' />)}
+                        {turn.attachments.map((u, j) => <img key={j} src={u} alt={t('图片 {n}', { n: j + 1 })} className='h-24 max-w-40 rounded-lg border object-cover' />)}
                       </div>
                     )}
-                    {!t.attachments?.length && !!t.attachmentCount && <span className='text-xs text-muted-foreground'>[{t.attachmentCount} 张图片，未保存在本地]</span>}
-                    {t.text && (
+                    {!turn.attachments?.length && !!turn.attachmentCount && <span className='text-xs text-muted-foreground'>[{t('{n} 张图片，未保存在本地', { n: turn.attachmentCount })}]</span>}
+                    {turn.text && (
                       <div className='rounded-[14px] rounded-br-[4px] border border-primary/20 bg-primary-soft px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words'>
-                        {t.text}
+                        {turn.text}
                       </div>
                     )}
                   </div>
                 ) : (
-                  <AssistantTurn key={i} turn={t} showRaw={raw === i} onRaw={() => setRaw(raw === i ? null : i)} onCurl={() => copyCurl(t.request)} />
+                  <AssistantTurn key={i} turn={turn} showRaw={raw === i} onRaw={() => setRaw(raw === i ? null : i)} onCurl={() => copyCurl(turn.request)} />
                 ))}
               </div>
             )}
@@ -297,15 +299,15 @@ export function Playground() {
                 <div className='mb-2 flex flex-wrap items-center gap-2'>
                   {attachments.map((u, i) => (
                     <div key={i} className='relative'>
-                      <img src={u} alt={`待发送图片 ${i + 1}`} className='size-14 rounded-lg border object-cover' />
-                      <button type='button' aria-label='移除图片' onClick={() => setAttachments((a) => a.filter((_, j) => j !== i))}
+                      <img src={u} alt={t('待发送图片 {n}', { n: i + 1 })} className='size-14 rounded-lg border object-cover' />
+                      <button type='button' aria-label={t('移除图片')} onClick={() => setAttachments((a) => a.filter((_, j) => j !== i))}
                         className='absolute -end-1.5 -top-1.5 rounded-full border bg-background p-0.5 text-muted-foreground hover:text-foreground'>
                         <X className='size-3' />
                       </button>
                     </div>
                   ))}
-                  {sum?.images === 'none' && <span className='text-xs text-warning'>该路由的模型不支持图片输入</span>}
-                  {sum?.images === 'some' && <span className='text-xs text-muted-foreground'>部分上游不支持图片，带图请求是否可用取决于路由规则</span>}
+                  {sum?.images === 'none' && <span className='text-xs text-warning'>{t('该路由的模型不支持图片输入')}</span>}
+                  {sum?.images === 'some' && <span className='text-xs text-muted-foreground'>{t('部分上游不支持图片，带图请求是否可用取决于路由规则')}</span>}
                 </div>
               )}
               <div className='flex items-end gap-1 rounded-[26px] border bg-background px-2 py-1 shadow-sm transition-colors focus-within:border-ring'>
@@ -315,17 +317,17 @@ export function Playground() {
                       onChange={(e) => { if (e.target.files) attach(e.target.files); e.target.value = '' }} />
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <button type='button' aria-label='添加图片' onClick={() => fileInput.current?.click()}
+                        <button type='button' aria-label={t('添加图片')} onClick={() => fileInput.current?.click()}
                           className='mb-0.5 flex size-[34px] shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground'>
                           <ImagePlus className='size-[18px]' />
                         </button>
                       </TooltipTrigger>
-                      <TooltipContent>添加图片（也可以直接粘贴）</TooltipContent>
+                      <TooltipContent>{t('添加图片（也可以直接粘贴）')}</TooltipContent>
                     </Tooltip>
                   </>
                 )}
                 <AutoTextarea value={input} onChange={setInput}
-                  placeholder={!s.route ? '先选择模型' : busy ? '正在生成…' : s.format === 'systemone' ? '输入 state（待判断的内容，可以是 JSON 对象）…' : '输入消息…'}
+                  placeholder={!s.route ? t('先选择模型') : busy ? t('正在生成…') : s.format === 'systemone' ? t('输入 state（待判断的内容，可以是 JSON 对象）…') : t('输入消息…')}
                   onPaste={(e) => {
                     const files = [...e.clipboardData.files]
                     if (canAttach && files.some((f) => f.type.startsWith('image/'))) { e.preventDefault(); attach(files) }
@@ -335,19 +337,19 @@ export function Playground() {
                     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() }
                   }} />
                 {busy ? (
-                  <button type='button' aria-label='停止' onClick={() => abort.current?.abort()}
+                  <button type='button' aria-label={t('停止')} onClick={() => abort.current?.abort()}
                     className='mb-0.5 flex size-[34px] shrink-0 items-center justify-center rounded-[10px] bg-destructive text-white active:translate-y-px'>
                     <Square className='size-4 fill-current' />
                   </button>
                 ) : (
-                  <button type='button' aria-label='发送' onClick={send}
+                  <button type='button' aria-label={t('发送')} onClick={send}
                     disabled={(!input.trim() && !(canAttach && attachments.length)) || !s.route || !!qErr}
                     className='mb-0.5 flex size-[34px] shrink-0 items-center justify-center rounded-[10px] bg-primary text-primary-foreground active:translate-y-px disabled:opacity-40'>
                     <ArrowUp className='size-[18px]' />
                   </button>
                 )}
               </div>
-              <p className='mt-1.5 text-center text-[11px] text-muted-foreground'>Enter 发送 · Shift + Enter 换行{canAttach ? ' · 可直接粘贴图片' : ''} · 对话只保存在本浏览器</p>
+              <p className='mt-1.5 text-center text-[11px] text-muted-foreground'>{canAttach ? t('Enter 发送 · Shift + Enter 换行 · 可直接粘贴图片 · 对话只保存在本浏览器') : t('Enter 发送 · Shift + Enter 换行 · 对话只保存在本浏览器')}</p>
             </div>
           </div>
         </div>

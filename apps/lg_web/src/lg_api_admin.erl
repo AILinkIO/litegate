@@ -215,10 +215,10 @@ handle_(<<"GET">>, [<<"middleware">>], _U, Req) ->
                                                              <<"missing_impl">> => not maps:is_key(I, Impls),
                                                              <<"hooks">> => lg_middleware:hooks_for(I, O)}
                                  || #lg_middleware{id = Id, impl = I, options = O} = M <- lg_middlewares:list()],
-                 <<"impls">> => lg_api:clean(lg_middleware:impl_info()),
+                 <<"impls">> => lg_api:clean(lg_middleware:impl_info(lg_api:lang(Req))),
                  <<"plugin_dir">> => list_to_binary(filename:absname(lg_middleware:plugin_dir()))}, Req);
 handle_(<<"POST">>, [<<"middleware">>, <<"plugins">>, <<"rescan">>], _U, Req) ->
-    lg_api:reply(200, lg_api:clean(lg_middleware:rescan()), Req);
+    lg_api:reply(200, lg_api:clean(lg_middleware:rescan(lg_api:lang(Req))), Req);
 %% 试运行：{impl, options, body, format} → 调用一次 on_request
 handle_(<<"POST">>, [<<"middleware">>, <<"test">>], _U, Req0) ->
     {Body, Req} = lg_api:body(Req0),
@@ -252,7 +252,7 @@ handle_(<<"GET">>, [<<"live">>, <<"state">>], _U, Req) ->
                #{route := R} when is_binary(R), R =/= <<>> -> #{route => R};
                _ -> #{}
            end,
-    lg_api:reply(200, lg_api:clean(lg_live:state(Opts)), Req);
+    lg_api:reply(200, lg_api:clean(lg_api:localize_live(lg_live:state(Opts), lg_api:lang(Req))), Req);
 
 %% ---- 按量付费 Key 的余额 ----
 handle_(<<"GET">>, [<<"balances">>], _U, Req) ->
@@ -354,6 +354,8 @@ handle_(<<"PUT">>, [<<"settings">>, K], _U, Req0) ->
                 ok -> ok;
                 {error, Why} -> throw({reply, 400, lg_api:err(<<"invalid_request">>, Why), Req})
             end,
+            Key =:= alert_language andalso not lists:member(V, [<<"zh">>, <<"en">>])
+                andalso lg_api:bad_request({invalid, <<"value">>}, Req),
             %% 开启登录前必须已有可用的管理员，否则会把自己锁在外面
             Key =:= console_auth andalso V =:= true andalso not has_admin()
                 andalso throw({reply, 400, lg_api:err(<<"invalid_request">>,

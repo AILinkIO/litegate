@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Bell, Pencil, Plus, RefreshCw, Send, Trash2, Webhook } from 'lucide-react'
 import { toast } from 'sonner'
+import { t, tk } from '@/i18n'
 import { api, seg, type AlertChannel, type AlertEvent, type AlertRecord, type AlertRule, type ChannelType } from '@/lib/api'
 import { fmtTime } from '@/lib/format'
 import { useGet, useInvalidate } from '@/lib/query'
@@ -20,24 +21,24 @@ import { PageHeader } from '@/components/page'
 import { Empty, ErrorAlert } from '@/components/query-state'
 
 const CHANNEL_TYPES: Record<ChannelType, { label: string; placeholder: string; secret: boolean }> = {
-  feishu: { label: '飞书群机器人', placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/…', secret: true },
-  dingtalk: { label: '钉钉群机器人', placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=…', secret: true },
-  wecom: { label: '企业微信群机器人', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…', secret: false },
-  webhook: { label: '通用 Webhook（JSON）', placeholder: 'https://example.com/hooks/litegate', secret: false },
+  feishu: { label: tk('飞书群机器人'), placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/…', secret: true },
+  dingtalk: { label: tk('钉钉群机器人'), placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=…', secret: true },
+  wecom: { label: tk('企业微信群机器人'), placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…', secret: false },
+  webhook: { label: tk('通用 Webhook（JSON）'), placeholder: 'https://example.com/hooks/litegate', secret: false },
 }
 
 const EVENTS: Record<AlertEvent, { label: string; threshold?: { label: string; unit: string; def: number } }> = {
-  budget: { label: '预算用量', threshold: { label: '已用比例', unit: '%', def: 80 } },
-  plan_quota: { label: '订阅套餐额度', threshold: { label: '窗口已用比例', unit: '%', def: 90 } },
-  upstream_down: { label: '上游故障', threshold: { label: '连续失败次数', unit: '次', def: 3 } },
-  catalog_sync_failed: { label: '模型目录同步失败' },
-  balance_low: { label: '余额不足（告警线在凭证上设置）' },
+  budget: { label: tk('预算用量'), threshold: { label: tk('已用比例'), unit: '%', def: 80 } },
+  plan_quota: { label: tk('订阅套餐额度'), threshold: { label: tk('窗口已用比例'), unit: '%', def: 90 } },
+  upstream_down: { label: tk('上游故障'), threshold: { label: tk('连续失败次数'), unit: tk('次'), def: 3 } },
+  catalog_sync_failed: { label: tk('模型目录同步失败') },
+  balance_low: { label: tk('余额不足（告警线在凭证上设置）') },
 }
 
 const LEVEL = {
-  info: { label: '恢复', variant: 'success' },
-  warning: { label: '警告', variant: 'warning' },
-  critical: { label: '严重', variant: 'danger' },
+  info: { label: tk('恢复'), variant: 'success' },
+  warning: { label: tk('警告'), variant: 'warning' },
+  critical: { label: tk('严重'), variant: 'danger' },
 } as const
 
 const errorToast = (e: unknown) => toast.error((e as Error).message)
@@ -46,12 +47,12 @@ export function Alerts() {
   const channels = useGet<AlertChannel[]>('/alerts/channels')
   return (
     <>
-      <PageHeader title='告警' subtitle='预算、上游故障、套餐额度等事件通过飞书、钉钉、企业微信或 Webhook 通知' />
+      <PageHeader title={t('告警')} subtitle={t('预算、上游故障、套餐额度等事件通过飞书、钉钉、企业微信或 Webhook 通知')} />
       <Tabs defaultValue='channels'>
         <TabsList className='mb-4'>
-          <TabsTrigger value='channels'>通知渠道</TabsTrigger>
-          <TabsTrigger value='rules'>告警规则</TabsTrigger>
-          <TabsTrigger value='history'>通知记录</TabsTrigger>
+          <TabsTrigger value='channels'>{t('通知渠道')}</TabsTrigger>
+          <TabsTrigger value='rules'>{t('告警规则')}</TabsTrigger>
+          <TabsTrigger value='history'>{t('通知记录')}</TabsTrigger>
         </TabsList>
         <TabsContent value='channels'><Channels data={channels.data} error={channels.error} /></TabsContent>
         <TabsContent value='rules'><Rules channels={channels.data ?? []} /></TabsContent>
@@ -75,8 +76,8 @@ function Channels({ data, error }: { data?: AlertChannel[]; error: Error | null 
     setTesting(c.id)
     try {
       const r = await api.post<{ ok: boolean; error?: string }>(`/alerts/channels/${seg(c.id)}/test`)
-      if (r.ok) toast.success('测试消息已发送')
-      else toast.error(`发送失败：${r.error}`)
+      if (r.ok) toast.success(t('测试消息已发送'))
+      else toast.error(t('发送失败：{error}', { error: r.error ?? '' }))
     } catch (e) {
       errorToast(e)
     } finally {
@@ -94,7 +95,7 @@ function Channels({ data, error }: { data?: AlertChannel[]; error: Error | null 
 
   return (
     <>
-      <Button className='mb-3' onClick={() => setEditing('new')}><Plus /> 添加渠道</Button>
+      <Button className='mb-3' onClick={() => setEditing('new')}><Plus /> {t('添加渠道')}</Button>
       {error && <ErrorAlert message={error.message} />}
       {!data && !error && <Skeleton className='h-32 rounded-xl' />}
       {data && (
@@ -104,30 +105,30 @@ function Channels({ data, error }: { data?: AlertChannel[]; error: Error | null 
               <div className='flex min-w-0 flex-1 basis-72 items-center gap-3'>
                 <div className='flex size-9 shrink-0 items-center justify-center rounded-lg bg-secondary text-subtle-foreground'><Webhook className='size-4' /></div>
                 <div className='min-w-0'>
-                  <div className='flex items-center gap-1.5'><span className='font-semibold'>{c.name}</span><Badge variant='muted'>{CHANNEL_TYPES[c.type].label}</Badge>
-                    {c.has_secret && <Badge variant='outline'>加签</Badge>}</div>
+                  <div className='flex items-center gap-1.5'><span className='font-semibold'>{c.name}</span><Badge variant='muted'>{t(CHANNEL_TYPES[c.type].label)}</Badge>
+                    {c.has_secret && <Badge variant='outline'>{t('加签')}</Badge>}</div>
                   <div className='truncate font-mono text-xs text-muted-foreground'>{c.url_hint}</div>
                 </div>
               </div>
               <div className='ms-auto flex items-center gap-1'>
-                <Switch checked={c.enabled} onCheckedChange={() => toggle(c)} aria-label='启用' />
+                <Switch checked={c.enabled} onCheckedChange={() => toggle(c)} aria-label={t('启用')} />
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant='ghost' size='icon' className='ms-2' aria-label='发送测试消息' disabled={testing === c.id} onClick={() => test(c)}><Send /></Button>
+                    <Button variant='ghost' size='icon' className='ms-2' aria-label={t('发送测试消息')} disabled={testing === c.id} onClick={() => test(c)}><Send /></Button>
                   </TooltipTrigger>
-                  <TooltipContent>发送测试消息</TooltipContent>
+                  <TooltipContent>{t('发送测试消息')}</TooltipContent>
                 </Tooltip>
-                <Button variant='ghost' size='icon' aria-label='编辑' onClick={() => setEditing(c)}><Pencil /></Button>
-                <Button variant='ghost' size='icon' aria-label='删除' onClick={() => setDeleting(c)}><Trash2 /></Button>
+                <Button variant='ghost' size='icon' aria-label={t('编辑')} onClick={() => setEditing(c)}><Pencil /></Button>
+                <Button variant='ghost' size='icon' aria-label={t('删除')} onClick={() => setDeleting(c)}><Trash2 /></Button>
               </div>
             </Row>
           ))}
-          {data.length === 0 && <Empty>还没有通知渠道。添加一个群机器人或 Webhook 地址后即可在规则中使用。</Empty>}
+          {data.length === 0 && <Empty>{t('还没有通知渠道。添加一个群机器人或 Webhook 地址后即可在规则中使用。')}</Empty>}
         </div>
       )}
       {editing && <ChannelDialog channel={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={() => invalidate('/alerts/channels')} />}
-      <ConfirmDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)} title='删除渠道' destructive confirmText='删除'
-        desc={`确定删除「${deleting?.name}」？使用它的规则将不再通知到这里。`}
+      <ConfirmDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)} title={t('删除渠道')} destructive confirmText={t('删除')}
+        desc={t('确定删除「{name}」？使用它的规则将不再通知到这里。', { name: deleting?.name ?? '' })}
         handleConfirm={async () => {
           try {
             await api.del(`/alerts/channels/${seg(deleting!.id)}`)
@@ -160,7 +161,7 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel: AlertChannel | 
       else if (clearSecret || !meta.secret) body.secret = null
       if (isNew) await api.post('/alerts/channels', body)
       else await api.put(`/alerts/channels/${seg(channel.id)}`, body)
-      toast.success('已保存')
+      toast.success(t('已保存'))
       onSaved()
       onClose()
     } catch (e) {
@@ -173,30 +174,30 @@ function ChannelDialog({ channel, onClose, onSaved }: { channel: AlertChannel | 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className='sm:max-w-lg'>
-        <DialogHeader><DialogTitle>{isNew ? '添加通知渠道' : `编辑渠道：${channel.name}`}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{isNew ? t('添加通知渠道') : t('编辑渠道：{name}', { name: channel.name })}</DialogTitle></DialogHeader>
         <div className='grid gap-4'>
-          <Field label='名称' required><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <Field label='类型'>
+          <Field label={t('名称')} required><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label={t('类型')}>
             <SimpleSelect value={type} onChange={(v) => setType(v as ChannelType)}
-              options={Object.entries(CHANNEL_TYPES).map(([k, t]) => ({ value: k, label: t.label }))} />
+              options={Object.entries(CHANNEL_TYPES).map(([k, ct]) => ({ value: k, label: t(ct.label) }))} />
           </Field>
-          <Field label='地址' required={isNew} hint={isNew ? '含访问令牌，加密存储' : `当前：${channel.url_hint}；留空保持不变`}>
+          <Field label={t('地址')} required={isNew} hint={isNew ? t('含访问令牌，加密存储') : t('当前：{url}；留空保持不变', { url: channel.url_hint })}>
             <Input className='font-mono text-[13px]' value={url} placeholder={meta.placeholder} onChange={(e) => setUrl(e.target.value)} />
           </Field>
           {meta.secret && (
-            <Field label='签名密钥（可选）' hint={channel?.has_secret && !clearSecret
-              ? <>已设置；留空保持不变，或 <button type='button' className='text-primary hover:underline' onClick={() => setClearSecret(true)}>清除</button></>
-              : '机器人开启「加签」安全设置时填写'}>
+            <Field label={t('签名密钥（可选）')} hint={channel?.has_secret && !clearSecret
+              ? <>{t('已设置；留空保持不变，或')} <button type='button' className='text-primary hover:underline' onClick={() => setClearSecret(true)}>{t('清除@@inline')}</button></>
+              : t('机器人开启「加签」安全设置时填写')}>
               <Input type='password' autoComplete='off' value={secret} onChange={(e) => { setSecret(e.target.value); setClearSecret(false) }} />
             </Field>
           )}
           {type === 'webhook' && (
-            <p className='text-xs text-muted-foreground'>POST JSON：{'{ event, level, title, text, ts, data }'}，level 为 info / warning / critical</p>
+            <p className='text-xs text-muted-foreground'>{t('POST JSON：{schema}，level 为 info / warning / critical', { schema: '{ event, level, title, text, ts, data }' })}</p>
           )}
         </div>
         <DialogFooter>
-          <Button variant='outline' onClick={onClose}>取消</Button>
-          <Button onClick={save} disabled={busy || !name.trim() || (isNew && !url.trim())}>保存</Button>
+          <Button variant='outline' onClick={onClose}>{t('取消')}</Button>
+          <Button onClick={save} disabled={busy || !name.trim() || (isNew && !url.trim())}>{t('保存')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -222,8 +223,8 @@ function Rules({ channels }: { channels: AlertChannel[] }) {
   return (
     <>
       <div className='mb-3 flex items-center gap-3'>
-        <Button onClick={() => setEditing('new')} disabled={channels.length === 0}><Plus /> 添加规则</Button>
-        {channels.length === 0 && <span className='text-sm text-muted-foreground'>先在「通知渠道」中添加至少一个渠道。</span>}
+        <Button onClick={() => setEditing('new')} disabled={channels.length === 0}><Plus /> {t('添加规则')}</Button>
+        {channels.length === 0 && <span className='text-sm text-muted-foreground'>{t('先在「通知渠道」中添加至少一个渠道。')}</span>}
       </div>
       {q.error && <ErrorAlert message={q.error.message} />}
       {q.data && (
@@ -235,30 +236,30 @@ function Rules({ channels }: { channels: AlertChannel[] }) {
                 <div className='flex min-w-0 flex-1 basis-72 items-center gap-3'>
                   <div className='flex size-9 shrink-0 items-center justify-center rounded-lg bg-secondary text-subtle-foreground'><Bell className='size-4' /></div>
                   <div>
-                    <div className='font-semibold'>{ev.label}</div>
-                    <div className='text-xs text-muted-foreground'>{ev.threshold ? `${ev.threshold.label} ≥ ${r.threshold}${ev.threshold.unit}` : '每次失败'}</div>
+                    <div className='font-semibold'>{t(ev.label)}</div>
+                    <div className='text-xs text-muted-foreground'>{ev.threshold ? `${t(ev.threshold.label)} ≥ ${r.threshold}${t(ev.threshold.unit)}` : t('每次失败')}</div>
                   </div>
                 </div>
                 <div className='flex flex-wrap gap-1'>
                   {r.channels.length ? r.channels.map((c) => <Badge key={c} variant='muted'>{chName.get(c) ?? c}</Badge>)
-                    : <span className='text-xs text-warning'>无渠道，不会通知</span>}
+                    : <span className='text-xs text-warning'>{t('无渠道，不会通知')}</span>}
                 </div>
                 <div className='ms-auto flex items-center gap-1'>
-                  <Switch checked={r.enabled} onCheckedChange={() => toggle(r)} aria-label='启用' />
-                  <Button variant='ghost' size='icon' className='ms-2' aria-label='编辑' onClick={() => setEditing(r)}><Pencil /></Button>
-                  <Button variant='ghost' size='icon' aria-label='删除' onClick={() => setDeleting(r)}><Trash2 /></Button>
+                  <Switch checked={r.enabled} onCheckedChange={() => toggle(r)} aria-label={t('启用')} />
+                  <Button variant='ghost' size='icon' className='ms-2' aria-label={t('编辑')} onClick={() => setEditing(r)}><Pencil /></Button>
+                  <Button variant='ghost' size='icon' aria-label={t('删除')} onClick={() => setDeleting(r)}><Trash2 /></Button>
                 </div>
               </Row>
             )
           })}
-          {q.data.length === 0 && <Empty>还没有告警规则。</Empty>}
+          {q.data.length === 0 && <Empty>{t('还没有告警规则。')}</Empty>}
         </div>
       )}
       <p className='mt-3 text-xs text-muted-foreground'>
-        预算每个周期、套餐额度每个窗口周期只通知一次；上游故障在恢复时发送恢复通知；目录同步失败在静默期（运行参数 alert_silence_ms）内不重复。
+        {t('预算每个周期、套餐额度每个窗口周期只通知一次；上游故障在恢复时发送恢复通知；目录同步失败在静默期（运行参数 alert_silence_ms）内不重复。通知文案的语言由运行参数 alert_language 设置（中文 / English）。')}
       </p>
       {editing && <RuleDialog rule={editing === 'new' ? null : editing} channels={channels} onClose={() => setEditing(null)} onSaved={() => invalidate('/alerts/rules')} />}
-      <ConfirmDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)} title='删除规则' desc='确定删除这条告警规则？' destructive confirmText='删除'
+      <ConfirmDialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)} title={t('删除规则')} desc={t('确定删除这条告警规则？')} destructive confirmText={t('删除')}
         handleConfirm={async () => {
           try {
             await api.del(`/alerts/rules/${seg(deleting!.id)}`)
@@ -277,15 +278,15 @@ function RuleDialog({ rule, channels, onClose, onSaved }: { rule: AlertRule | nu
   const [threshold, setThreshold] = useState(String(rule?.threshold ?? EVENTS[rule?.event ?? 'budget'].threshold?.def ?? ''))
   const [selected, setSelected] = useState<string[]>(channels.filter((c) => rule?.channels.includes(c.id)).map((c) => c.id))
   const [busy, setBusy] = useState(false)
-  const t = EVENTS[event].threshold
+  const th = EVENTS[event].threshold
 
   const save = async () => {
     setBusy(true)
     try {
-      const body = { event, threshold: t ? Number(threshold) : null, channels: selected }
+      const body = { event, threshold: th ? Number(threshold) : null, channels: selected }
       if (rule) await api.put(`/alerts/rules/${seg(rule.id)}`, body)
       else await api.post('/alerts/rules', body)
-      toast.success('已保存')
+      toast.success(t('已保存'))
       onSaved()
       onClose()
     } catch (e) {
@@ -298,21 +299,21 @@ function RuleDialog({ rule, channels, onClose, onSaved }: { rule: AlertRule | nu
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className='sm:max-w-lg'>
-        <DialogHeader><DialogTitle>{rule ? '编辑告警规则' : '添加告警规则'}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{rule ? t('编辑告警规则') : t('添加告警规则')}</DialogTitle></DialogHeader>
         <div className='grid gap-4'>
-          <Field label='事件'>
+          <Field label={t('事件')}>
             <SimpleSelect value={event} onChange={(v) => { setEvent(v as AlertEvent); setThreshold(String(EVENTS[v as AlertEvent].threshold?.def ?? '')) }}
-              options={Object.entries(EVENTS).map(([k, v]) => ({ value: k, label: v.label }))} />
+              options={Object.entries(EVENTS).map(([k, v]) => ({ value: k, label: t(v.label) }))} />
           </Field>
-          {t && <Field label={`${t.label}（${t.unit}）`}><Input type='number' value={threshold} onChange={(e) => setThreshold(e.target.value)} /></Field>}
-          <Field label='通知渠道'>
-            <TagInput freeSolo={false} value={selected} onChange={setSelected} placeholder='选择渠道'
+          {th && <Field label={t(th.unit) ? t('{label}（{unit}）', { label: t(th.label), unit: t(th.unit) }) : t(th.label)}><Input type='number' value={threshold} onChange={(e) => setThreshold(e.target.value)} /></Field>}
+          <Field label={t('通知渠道')}>
+            <TagInput freeSolo={false} value={selected} onChange={setSelected} placeholder={t('选择渠道')}
               options={channels.map((c) => ({ value: c.id, label: c.name }))} />
           </Field>
         </div>
         <DialogFooter>
-          <Button variant='outline' onClick={onClose}>取消</Button>
-          <Button onClick={save} disabled={busy || selected.length === 0 || (!!t && !(Number(threshold) > 0))}>保存</Button>
+          <Button variant='outline' onClick={onClose}>{t('取消')}</Button>
+          <Button onClick={save} disabled={busy || selected.length === 0 || (!!th && !(Number(threshold) > 0))}>{t('保存')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -324,7 +325,7 @@ function History() {
   return (
     <>
       <Button variant='ghost' size='sm' className='mb-3 text-muted-foreground' onClick={() => q.refetch()}>
-        <RefreshCw className={cn(q.isFetching && 'animate-spin')} /> 刷新
+        <RefreshCw className={cn(q.isFetching && 'animate-spin')} /> {t('刷新')}
       </Button>
       {q.error && <ErrorAlert message={q.error.message} />}
       {q.data && (
@@ -332,7 +333,7 @@ function History() {
           {q.data.map((a, i) => (
             <Row key={a.id} first={i === 0}>
               <span className='w-40 shrink-0 text-sm text-muted-foreground'>{fmtTime(a.ts)}</span>
-              <Badge variant={LEVEL[a.level].variant}>{LEVEL[a.level].label}</Badge>
+              <Badge variant={LEVEL[a.level].variant}>{t(LEVEL[a.level].label)}</Badge>
               <div className='min-w-0 flex-1 basis-60'>
                 <div className='font-medium'>{a.title}</div>
                 <div className='text-xs text-muted-foreground'>{a.text}</div>
@@ -349,7 +350,7 @@ function History() {
               </div>
             </Row>
           ))}
-          {q.data.length === 0 && <Empty>暂无通知</Empty>}
+          {q.data.length === 0 && <Empty>{t('暂无通知')}</Empty>}
         </div>
       )}
     </>

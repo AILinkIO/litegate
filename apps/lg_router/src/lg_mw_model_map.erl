@@ -8,7 +8,10 @@
 describe() ->
     #{title => <<"模型名映射"/utf8>>,
       description => <<"把客户端请求的模型名换成另一个路由名，例如让客户端写死的 gpt-4o 实际走 fast 路由"/utf8>>,
-      options_example => #{<<"mapping">> => #{<<"gpt-4o">> => <<"fast">>}}}.
+      options_example => #{<<"mapping">> => #{<<"gpt-4o">> => <<"fast">>}},
+      en => #{title => <<"Model name mapping">>,
+              description => <<"Replace the model name a client requests with another route name, "
+                               "e.g. send a client's hard-coded gpt-4o to the fast route">>}}.
 
 validate(#{<<"mapping">> := M}) when is_map(M) ->
     case lists:all(fun({K, V}) -> is_binary(K) andalso is_binary(V) andalso V =/= <<>> end, maps:to_list(M)) of

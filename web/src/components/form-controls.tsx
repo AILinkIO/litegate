@@ -8,6 +8,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { t } from '@/i18n'
 
 export interface Option { value: string; label: ReactNode; keywords?: string; hint?: ReactNode }
 
@@ -35,7 +36,7 @@ export function SimpleSelect({ value, onChange, options, placeholder, className,
 }
 
 /** 可搜索的单选（选项多时用，如供应商、凭证、模型）；allowCustom 时可直接用输入的文字 */
-export function Combobox({ value, onChange, options, placeholder = '请选择', searchPlaceholder = '搜索…', empty = '没有匹配项',
+export function Combobox({ value, onChange, options, placeholder = t('请选择'), searchPlaceholder = t('搜索…'), empty = t('没有匹配项'),
   allowCustom, clearable, className, id, mono }: {
   value: string | null
   onChange: (v: string | null) => void
@@ -78,14 +79,14 @@ export function Combobox({ value, onChange, options, placeholder = '请选择', 
             <CommandEmpty>
               {allowCustom && text.trim() ? (
                 <button type='button' className='w-full px-2 text-start text-sm' onClick={() => pick(text.trim())}>
-                  使用 <span className='font-mono'>{text.trim()}</span>
+                  {t('使用')} <span className='font-mono'>{text.trim()}</span>
                 </button>
               ) : empty}
             </CommandEmpty>
             <CommandGroup>
               {allowCustom && text.trim() && !options.some((o) => o.value === text.trim()) && (
                 <CommandItem value={`__custom__ ${text}`} onSelect={() => pick(text.trim())}>
-                  使用 <span className='font-mono'>{text.trim()}</span>
+                  {t('使用')} <span className='font-mono'>{text.trim()}</span>
                 </CommandItem>
               )}
               {options.map((o) => (
@@ -107,7 +108,7 @@ export function Combobox({ value, onChange, options, placeholder = '请选择', 
 }
 
 /** 多值输入：回车或逗号添加；有 options 时可从中选择（freeSolo 时也可输入任意值） */
-export function TagInput({ value, onChange, options, placeholder = '输入后回车', freeSolo = true, className, mono, id, normalize }: {
+export function TagInput({ value, onChange, options, placeholder = t('输入后回车'), freeSolo = true, className, mono, id, normalize }: {
   value: string[]
   onChange: (v: string[]) => void
   options?: Option[]
@@ -136,7 +137,7 @@ export function TagInput({ value, onChange, options, placeholder = '输入后回
           {value.map((v) => (
             <Badge key={v} variant='muted' className={cn('gap-0.5 pe-1', mono && 'font-mono')}>
               {label(v)}
-              <button type='button' aria-label='移除' className='rounded-sm opacity-60 hover:opacity-100'
+              <button type='button' aria-label={t('移除')} className='rounded-sm opacity-60 hover:opacity-100'
                 onClick={(e) => { e.stopPropagation(); onChange(value.filter((x) => x !== v)) }}>
                 <X className='size-3' />
               </button>
@@ -146,9 +147,9 @@ export function TagInput({ value, onChange, options, placeholder = '输入后回
             className='min-w-24 flex-1 bg-transparent py-0.5 text-sm outline-none placeholder:text-muted-foreground'
             onFocus={() => setOpen(true)}
             onChange={(e) => {
-              const t = e.target.value
-              if (freeSolo && /[,，]$/.test(t)) add(t.slice(0, -1))
-              else setText(t)
+              const s = e.target.value
+              if (freeSolo && /[,\uFF0C]$/.test(s)) add(s.slice(0, -1))
+              else setText(s)
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {

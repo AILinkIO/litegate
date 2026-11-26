@@ -99,3 +99,191 @@ network_error_test() ->
              usage => #{input => 10, output => 5, cache_read => 0, cache_write => 0}},
     [{info, _}, {warn, W}, {ok, _}] = texts(Log2),
     ?assertEqual(<<"minimax-a（m）网络错误：上游域名无法解析，改用下一个（第 2 次尝试）"/utf8>>, W).
+
+%%--------------------------------------------------------------------
+%% 英文（lines/3）：每个分支一句
+
+en(Log) -> [{T, X} || #{tone := T, text := X} <- lg_narrate:lines(Log, en, fun name/1)].
+
+lang_arg_test() ->
+    Log = #{route => <<"gpt">>, status => 200, cache_hit => true},
+    %% lines/2 的第二个参数可以是语言，也可以是名称函数（中文）
+    ?assertMatch([#{text := <<"A client requested gpt">>} | _], lg_narrate:lines(Log, en)),
+    ?assertMatch([#{text := <<"客户端 请求了 gpt"/utf8>>} | _], lg_narrate:lines(Log, zh)),
+    ?assertEqual(lg_narrate:lines(Log), lg_narrate:lines(Log, zh)),
+    ?assertEqual(lg_narrate:lines(Log, fun name/1), lg_narrate:lines(Log, zh, fun name/1)),
+    %% 未知语言按中文
+    ?assertEqual(lg_narrate:lines(Log, zh), lg_narrate:lines(Log, fr)),
+    ?assertEqual(<<"5h 80% resets 10-13 14:00 · recent 1200 tok"/utf8>>,
+                 lg_narrate:note(<<"5h 80% 重置 10-13 14:00 · 近期 1200 tok"/utf8>>, en)),
+    ?assertEqual(<<"5h 80%">>, lg_narrate:note(<<"5h 80%">>, zh)).
+
+en_intent_rule_test() ->
+    Log = #{route => <<"coder">>, model => <<"coder">>, client => <<"claude-code">>, status => 200, stream => true,
+            rule => 3, routed_to => <<"strong">>,
+            intent => #{intents => [<<"a quick question">>, <<"writing or fixing tests">>], answer => 2, ms => 1234,
+                        classifier => <<"judge">>},
+            plan_trace => [#{route => <<"strong">>, credential => <<"c1">>, upstream_model => <<"MiniMax-M2.7">>, tier => hot, note => <<>>},
+                           #{route => <<"coder">>, credential => <<"c2">>, upstream_model => <<"glm-5.3">>, tier => hot, note => <<>>}],
+            attempt_list => [#{credential => <<"c1">>, upstream_model => <<"MiniMax-M2.7">>, ok => true, duration_ms => 3400}],
+            credential => <<"c1">>, upstream_model => <<"MiniMax-M2.7">>, duration_ms => 3456, ttft_ms => 800,
+            usage => #{input => 1500, output => 600, cache_read => 0, cache_write => 0}, cost => 0.00031},
+    ?assertEqual(
+       [{info, <<"Claude Code requested coder; candidates: minimax-a (MiniMax-M2.7), glm (glm-5.3)">>},
+        {info, <<"Matched rule 3 (intent: “writing or fixing tests”); sending to strong first, "/utf8,
+                 "with this route's own targets as fallback">>},
+        {muted, <<"Asked judge which of “a quick question”, “writing or fixing tests” this turn belongs to; "/utf8,
+                  "it answered “writing or fixing tests” (1.2 s)"/utf8>>},
+        {ok, <<"minimax-a (MiniMax-M2.7) answered in 3.5 s, first token after 800 ms · 2.1k tokens · $0.0003"/utf8>>}],
+       en(Log)).
+
+en_fallback_affinity_test() ->
+    Log = #{route => <<"gpt">>, model => <<"claude-sonnet-4-5">>, client => <<"codex">>, status => 200,
+            affinity => <<"broken:cache_cold">>,
+            affinity_prev => #{credential => <<"c1">>, upstream_model => <<"m">>, cache_read => 0},
+            plan_trace => [#{route => <<"gpt">>, credential => <<"c1">>, upstream_model => <<"m">>, tier => hot, note => <<>>},
+                           #{route => <<"gpt">>, credential => <<"c2">>, upstream_model => <<"g">>, tier => exhausted,
+                             note => <<"5h 100% 重置 10-13 14:00"/utf8>>}],
+            attempt_list => [#{credential => <<"c1">>, upstream_model => <<"m">>, ok => false, kind => rate_limit,
+                               message => <<"rate limit exceeded(RPM)">>, duration_ms => 120},
+                             #{credential => <<"c2">>, upstream_model => <<"g">>, ok => true, duration_ms => 900}],
+            credential => <<"c2">>, upstream_model => <<"g">>, duration_ms => 1100, plan => true, plan_usd => 0.002,
+            usage => #{input => 10, output => 5, cache_read => 2000, cache_write => 0}},
+    ?assertEqual(
+       [{info, <<"Codex requested gpt (requested model name claude-sonnet-4-5); candidates: minimax-a (m), glm (g)">>},
+        {muted, <<"This session was last answered by minimax-a, but only 0 tokens were read from cache last time "
+                  "(or more than 5 minutes have passed), so it isn't worth staying">>},
+        {warn, <<"glm (g) has used up its plan quota (5h 100% resets 10-13 14:00); moved to the back">>},
+        {warn, <<"minimax-a (m) was rate-limited: rate limit exceeded(RPM); trying the next one (attempt 2)">>},
+        {ok, <<"glm (g) answered in 1.1 s · 2.0k tokens (2.0k cache read) · covered by plan (equivalent to $0.0020)"/utf8>>}],
+       en(Log)).
+
+en_affinity_test() ->
+    Base = #{route => <<"gpt">>, affinity_prev => #{credential => <<"c1">>, cache_read => 1}},
+    T = fun(A) -> [_, {muted, X}] = en(Base#{affinity => A}), X end,
+    ?assertEqual(<<"This session was last answered by minimax-a (1 token read from cache last time); staying with it">>,
+                 T(<<"hit">>)),
+    ?assertEqual(<<"This session was last answered by minimax-a, but it is cooling down; choosing again in normal order">>,
+                 T(<<"broken:cooling">>)),
+    ?assertEqual(<<"This session was last answered by minimax-a, but its plan window is almost used up; "
+                   "choosing again in normal order">>, T(<<"broken:plan_window_full">>)),
+    ?assertEqual(<<"This session was last answered by minimax-a, but it is at its concurrency limit with requests queued; "
+                   "choosing again in normal order">>, T(<<"broken:concurrency_full">>)),
+    ?assertEqual(<<"This session was last answered by minimax-a, but it is no longer part of this route">>,
+                 T(<<"broken:target_gone">>)),
+    ?assertEqual(<<"This session was last answered by minimax-a, but stickiness was dropped (whatever)">>,
+                 T(<<"broken:whatever">>)).
+
+en_tiers_test() ->
+    Tr = fun(Tier) -> #{credential => <<"c2">>, upstream_model => <<"g">>, tier => Tier, note => <<>>} end,
+    Log = #{route => <<"r">>, plan_trace => [Tr(reserve), Tr(cold), Tr(cold_reserve), Tr(<<"odd">>)]},
+    [{info, Head} | Rest] = en(Log),
+    ?assertEqual(<<"A client requested r; candidates: glm (g), glm (g), glm (g), glm (g)">>, Head),
+    ?assertEqual([{warn, <<"glm (g) has reached its plan reserve; moved to the back">>},
+                  {warn, <<"glm (g) is cooling down; moved to the back">>},
+                  {warn, <<"glm (g) is cooling down and has reached its plan reserve; moved to the back">>},
+                  {warn, <<"glm (g) is in tier odd; moved to the back">>}], Rest),
+    %% 超过 4 个候选
+    [{info, Many} | _] = en(#{route => <<"r">>, plan_trace => [Tr(hot) || _ <- lists:seq(1, 6)]}),
+    ?assertEqual(<<"A client requested r; candidates: glm (g), glm (g), glm (g), glm (g) and 2 more">>, Many).
+
+en_rules_intents_test() ->
+    %% 没有规则命中
+    ?assertEqual([{info, <<"A client requested r">>}, {info, <<"No rule matched; using the route's own order">>},
+                  {muted, <<"Asked the classifier which of “a” this turn belongs to; it answered none of them (40 ms)"/utf8>>}],
+                 en(#{route => <<"r">>, rule => 0, intent => #{intents => [<<"a">>], answer => 0, ms => 40}})),
+    %% 沿用判定、规则目标被跳过、意图判断失败
+    Reused = #{route => <<"coder">>, client => <<"litegate">>, rule => 2, rule_reused => true,
+               intent => #{error => <<"timeout">>, answer => 0, ms => 8000, intents => [<<"a">>], classifier => <<"j">>}},
+    ?assertEqual([{info, <<"The gateway (intent classification) requested coder">>},
+                  {info, <<"Reusing this conversation's earlier decision: rule 2, but the credentials the rule points to "
+                           "were skipped">>},
+                  {warn, <<"Intent classification failed (timeout); routing as usual this turn (classifier j)">>}],
+                 en(Reused)),
+    %% 本地判断失败后改问判断模型；同一条消息已判断过
+    Local = #{route => <<"r">>, intent => #{local_error => <<"down">>, classifier => <<"judge">>, cached => true,
+                                            intents => [<<"a">>, <<"b">>], answer => 1}},
+    ?assertEqual([{info, <<"A client requested r">>},
+                  {warn, <<"Local Laya failed to classify (down); asking judge instead">>},
+                  {muted, <<"Already decided for the same message which of “a”, “b” this turn belongs to: “a”"/utf8>>}],
+                 en(Local)),
+    By = #{route => <<"r">>, intent => #{local_error => <<"bad">>, local_by => <<"tiny">>, classifier => <<"judge">>,
+                                         error => <<"x">>}},
+    ?assertMatch([_, {warn, <<"Decision model tiny failed to classify (bad); asking judge instead">>}, {warn, _}], en(By)),
+    %% 嵌套路由
+    Nested = #{route => <<"claude-*">>, status => 200,
+               nested_rules => [#{route => <<"coder">>, rule => 2, routed_to => <<"strong">>,
+                                  intent => #{intents => [<<"q">>, <<"code">>], answer => 2, ms => 900, classifier => <<"judge">>}}]},
+    [{info, _}, {info, R}, {muted, I}] = en(Nested),
+    ?assertEqual(<<"Nested route coder: Matched rule 2 (intent: “code”); sending to strong first, "/utf8,
+                   "with this route's own targets as fallback">>, R),
+    ?assertMatch(<<"Nested route coder: Asked judge which of", _/binary>>, I).
+
+en_attempts_test() ->
+    Log = #{route => <<"r">>, rounds => 2, patience_ms => 1500, queued_ms => 300,
+            attempt_list => [#{credential => <<"c1">>, busy => true},
+                             #{credential => <<"c2">>, upstream_model => <<"g">>, ok => false, kind => network,
+                               message => <<"Upstream connection failed: {down,{shutdown,nxdomain}}">>},
+                             #{credential => <<"c1">>, ok => false, kind => something_new},
+                             #{credential => <<"c2">>, ok => true}],
+            credential => <<"c2">>, duration_ms => 2000, plan => true},
+    ?assertEqual(
+       [{info, <<"A client requested r">>},
+        {warn, <<"minimax-a is at its concurrency limit; skipped">>},
+        {warn, <<"glm (g) hit a network error: Upstream host name could not be resolved; trying the next one (attempt 3)">>},
+        {warn, <<"minimax-a failed (something_new); trying the next one (attempt 4)">>},
+        {warn, <<"All candidates were busy; waited 1.5 s and retried the whole round (2 rounds in total)">>},
+        {warn, <<"The credential was at its concurrency limit; queued for 300 ms">>},
+        {ok, <<"glm answered in 2.0 s · covered by plan"/utf8>>}],
+       en(Log)),
+    ?assertMatch([_, {warn, <<"All candidates were busy; waited 900 ms and retried the whole round">>}],
+                 en(#{route => <<"r">>, attempt_list => [], rounds => 1, patience_ms => 900})).
+
+en_result_test() ->
+    %% 响应缓存
+    ?assertEqual([{info, <<"A client requested gpt">>},
+                  {ok, <<"Served from the response cache without calling the upstream, saving $0.50">>}],
+                 en(#{route => <<"gpt">>, status => 200, cache_hit => true, saved_usd => 0.5})),
+    %% 上游失败：以上游为主语
+    Err = #{route => <<"gpt">>, status => 503, client => <<"other">>,
+            attempt_list => [#{credential => <<"c1">>, upstream_model => <<"m">>, ok => false, kind => server}],
+            error => #{kind => server, message => <<"Upstream returned HTTP 503">>}},
+    ?assertEqual([{info, <<"A client requested gpt">>},
+                  {error, <<"minimax-a (m) returned a server error; the client received 503: Upstream returned HTTP 503">>}],
+                 en(Err)),
+    %% 网关自己拒绝（没有尝试）
+    Gw = fun(K) -> [_, {error, X}] = en(#{route => <<"gpt">>, status => 404, error => #{kind => K}}), X end,
+    ?assertEqual(<<"Model not found; the client received 404">>, Gw(route_not_found)),
+    ?assertEqual(<<"Budget exceeded; the client received 404">>, Gw(budget_exceeded)),
+    ?assertEqual(<<"No upstream available; the client received 404">>, Gw(no_available_target)),
+    ?assertEqual(<<"Failed; the client received 404">>,
+                 begin [_, {error, X}] = en(#{route => <<"gpt">>, status => 404, error => #{}}), X end),
+    %% TLS 映射
+    [_, {error, Tls}] = en(Err#{error := #{kind => network, message => <<"{tls_alert,{handshake_failure}}">>}}),
+    ?assertEqual(<<"minimax-a (m) hit a network error; the client received 503: Upstream TLS handshake failed">>, Tls),
+    %% 复读截断、脱敏、按量计费、没有上游模型名
+    Ok = #{route => <<"gpt">>, status => 200, credential => <<"c1">>, duration_ms => 50, loop_detected => true,
+           redacted => 3, cost => 1.5, usage => #{input => 1, output => 0}},
+    ?assertEqual([{info, <<"A client requested gpt">>},
+                  {info, <<"3 pieces of sensitive information in the request were sent upstream as placeholders "
+                           "and restored in the reply">>},
+                  {warn, <<"The output got stuck repeating itself; the gateway ended it early "
+                           "(finish reason recorded as the length limit)">>},
+                  {ok, <<"minimax-a answered in 50 ms · 1 token · $1.50"/utf8>>}],
+                 en(Ok)),
+    ?assertMatch([_, {info, <<"1 piece of sensitive information in the request was sent upstream as a placeholder "
+                              "and restored in the reply">>}, _],
+                 en(Ok#{redacted := 1, loop_detected := false})).
+
+%% 英文输出里不应残留中文（除了日志里原样带入的字段）
+en_no_cjk_test() ->
+    Logs = [#{route => <<"r">>, rule => 0, intent => #{intents => [<<"a">>], answer => 0, ms => 1}},
+            #{route => <<"r">>, client => <<"litegate">>, status => 502,
+              attempt_list => [#{credential => <<"c1">>, ok => false, kind => K} || K <- kinds()],
+              error => #{kind => timeout, message => <<"timeout">>}}],
+    [?assertEqual(nomatch, re:run(X, "[\\x{4e00}-\\x{9fff}\\x{3000}-\\x{303f}\\x{ff00}-\\x{ffef}]", [unicode]))
+     || L <- Logs, {_, X} <- en(L)].
+
+kinds() ->
+    [rate_limit, quota, credit, unserved, server, timeout, network, auth, client, concurrency, route_not_found,
+     route_forbidden, rate_limited, budget_exceeded, plan_exhausted, middleware_rejected, no_available_target].

@@ -1,5 +1,6 @@
 import { api, type BudgetStatus, type LimitScope, type LimitValues } from '@/lib/api'
 import { fmtTokens } from '@/lib/format'
+import { t, tk } from '@/i18n'
 
 // 表单内以字符串保存，空串 = 不限
 export interface LimitDraft { rpm: string; tpm: string; max_parallel: string }
@@ -32,14 +33,14 @@ export const saveLimit = (scope: LimitScope, d: LimitDraft) =>
 export const saveBudget = (scope: LimitScope, d: BudgetDraft) =>
   api.put('/budgets', { scope, period: d.period, max_usd: num(d.max_usd) })
 
-export const PERIOD_LABEL = { day: '每天', week: '每周', month: '每月' } as const
+export const PERIOD_LABEL = { day: tk('每天'), week: tk('每周'), month: tk('每月') } as const
 
 export function limitSummary(l?: LimitValues | null) {
   if (!l) return null
   const parts = [
     l.rpm && `${l.rpm} RPM`,
     l.tpm && `${fmtTokens(l.tpm)} TPM`,
-    l.max_parallel && `并发 ${l.max_parallel}`,
+    l.max_parallel && t('并发 {n}', { n: l.max_parallel }),
   ].filter(Boolean)
   return parts.length ? parts.join(' · ') : null
 }

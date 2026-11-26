@@ -230,7 +230,12 @@ settings(#{admin := A} = Ctx) ->
     {200, #{<<"value">> := 3, <<"source">> := <<"default">>}} =
         api(Ctx, A, <<"PUT">>, <<"/api/settings/route_max_attempts">>, #{<<"value">> => null}),
     ?assertMatch({404, _}, api(Ctx, A, <<"PUT">>, <<"/api/settings/http_port">>, #{<<"value">> => 1})),
-    ?assertMatch({404, _}, api(Ctx, A, <<"PUT">>, <<"/api/settings/nope">>, #{<<"value">> => 1})).
+    ?assertMatch({404, _}, api(Ctx, A, <<"PUT">>, <<"/api/settings/nope">>, #{<<"value">> => 1})),
+    %% 告警语言只接受 zh / en
+    ?assertMatch({400, _}, api(Ctx, A, <<"PUT">>, <<"/api/settings/alert_language">>, #{<<"value">> => <<"fr">>})),
+    {200, #{<<"value">> := <<"en">>}} = api(Ctx, A, <<"PUT">>, <<"/api/settings/alert_language">>, #{<<"value">> => <<"en">>}),
+    {200, #{<<"value">> := <<"zh">>, <<"source">> := <<"default">>}} =
+        api(Ctx, A, <<"PUT">>, <<"/api/settings/alert_language">>, #{<<"value">> => null}).
 
 logs_and_usage(#{admin := A} = Ctx) ->
     {ok, #{<<"id">> := Uid}} = {ok, hd([lg_users:to_map(X) || X <- lg_users:list(),
@@ -247,8 +252,15 @@ logs_and_usage(#{admin := A} = Ctx) ->
     {200, #{<<"items">> := Items}} = api(Ctx, A, <<"GET">>, <<"/api/logs?limit=10">>),
     ?assertEqual([Other, Mine], [maps:get(<<"id">>, I) || I <- Items]),
     ?assertMatch([#{<<"model_ref">> := [<<"p">>, <<"m">>]} | _], Items),
-    {200, #{<<"messages">> := #{<<"response">> := <<"hello">>}}} =
+    {200, #{<<"messages">> := #{<<"response">> := <<"hello">>}, <<"narrative">> := [#{<<"text">> := NZh} | _]}} =
         api(Ctx, A, <<"GET">>, <<"/api/logs/", Mine/binary>>),
+    ?assertEqual(<<"客户端 请求了 r"/utf8>>, NZh),
+    %% 决策叙述按界面语言（?lang= 或 Accept-Language）
+    {200, #{<<"narrative">> := [#{<<"text">> := <<"A client requested r">>} | _]}} =
+        api(Ctx, A, <<"GET">>, <<"/api/logs/", Mine/binary, "?lang=en">>),
+    {200, _, LB} = req(Ctx, <<"GET">>, <<"/api/logs/", Mine/binary>>,
+                       [{<<"authorization">>, <<"Bearer ", A/binary>>}, {<<"accept-language">>, <<"en">>}], <<>>),
+    ?assertMatch(#{<<"narrative">> := [#{<<"text">> := <<"A client requested r">>} | _]}, json:decode(LB)),
     U = login(Ctx, <<"dev">>, <<"new-password">>),
     {200, #{<<"items">> := [#{<<"id">> := Mine}]}} = api(Ctx, U, <<"GET">>, <<"/api/logs">>),
     %% 全文检索：管理员可见全部，普通用户只命中自己的
@@ -293,6 +305,16 @@ alerts(#{admin := A} = Ctx) ->
 openapi(Ctx) ->
     {200, _, B} = req(Ctx, <<"GET">>, <<"/api/openapi.json">>, [], <<>>),
     #{<<"openapi">> := <<"3.1.0">>, <<"paths">> := Paths} = json:decode(B),
+    %% 英文版：Accept-Language: en 或 ?lang=en（直接打开链接）；路径与中文版相同
+    {200, H1, B1} = req(Ctx, <<"GET">>, <<"/api/openapi.json">>, [{<<"accept-language">>, <<"en-US,en;q=0.9">>}], <<>>),
+    {200, _, B2} = req(Ctx, <<"GET">>, <<"/api/openapi.json?lang=en">>, [{<<"accept-language">>, <<"zh-CN">>}], <<>>),
+    {200, _, B3} = req(Ctx, <<"GET">>, <<"/api/openapi.json">>, [{<<"accept-language">>, <<"zh-CN">>}], <<>>),
+    ?assertEqual(<<"Accept-Language">>, proplists:get_value(<<"vary">>, H1)),
+    ?assertEqual(B1, B2),
+    ?assertEqual(B, B3),
+    ?assertNotEqual(B, B1),
+    #{<<"info">> := #{<<"description">> := <<"LiteGate LLM gateway", _/binary>>}, <<"paths">> := PathsEn} = json:decode(B1),
+    ?assertEqual(lists:sort(maps:keys(Paths)), lists:sort(maps:keys(PathsEn))),
     Documented = lists:usort([{string:uppercase(M), normalize(P)} || P := Ops <- Paths, M := _ <- Ops]),
     %% 管理端资源 handler 拆到 lg_api_admin，两处源码都要扫描
     Sources = [proplists:get_value(source, lg_api:module_info(compile)),

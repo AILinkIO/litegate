@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 're
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Check, ChevronRight, Copy, Route as RouteIcon, Wrench } from 'lucide-react'
+import { t } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 /** 助手回复的 Markdown（GFM：表格、删除线、任务列表）；代码块带语言名与复制按钮 */
@@ -37,7 +38,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
         {lang && <span className='text-[10px] tracking-wide text-muted-foreground uppercase'>{lang}</span>}
         <button type='button' onClick={copy}
           className='flex items-center gap-1 rounded-md border bg-background px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground'>
-          {copied ? <Check className='size-3' /> : <Copy className='size-3' />}{copied ? '已复制' : '复制'}
+          {copied ? <Check className='size-3' /> : <Copy className='size-3' />}{copied ? t('已复制') : t('复制')}
         </button>
       </div>
       <pre ref={ref}>{children}</pre>
@@ -54,8 +55,8 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming: bo
       <button type='button' onClick={() => setOpen(!shown)}
         className='-ms-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted-foreground/10'>
         <ChevronRight className={cn('size-3.5 transition-transform duration-200', shown && 'rotate-90')} />
-        <span className={cn(streaming && 'shimmer-text')}>{streaming ? '思考中…' : '思考过程'}</span>
-        <span className='num opacity-75'>{text.length} 字</span>
+        <span className={cn(streaming && 'shimmer-text')}>{streaming ? t('思考中…') : t('思考过程')}</span>
+        <span className='num opacity-75'>{t('{n} 字', { n: text.length })}</span>
       </button>
       {shown && <p className='ps-6 pt-1 pb-1 text-xs leading-relaxed whitespace-pre-wrap break-words text-muted-foreground'>{text}</p>}
     </div>
@@ -70,8 +71,8 @@ export function ToolCallCard({ name, args }: { name: string; args: string }) {
     <div className='overflow-hidden rounded-lg border border-s-[3px] border-s-primary bg-muted-foreground/5'>
       <div className='flex items-center gap-2 px-3 py-2'>
         <Wrench className='size-3.5 shrink-0 text-muted-foreground' />
-        <span className='truncate font-mono text-[0.8125rem]'>{name || '(未命名工具)'}</span>
-        <span className='text-xs text-muted-foreground'>工具调用</span>
+        <span className='truncate font-mono text-[0.8125rem]'>{name || t('(未命名工具)')}</span>
+        <span className='text-xs text-muted-foreground'>{t('工具调用')}</span>
       </div>
       {pretty && (
         <pre className='max-h-60 overflow-auto border-t bg-background/60 px-3 py-2 font-mono text-xs whitespace-pre-wrap break-all text-muted-foreground'>{pretty}</pre>

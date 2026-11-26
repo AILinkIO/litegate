@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Check, Moon, Sun } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { t } from '@/i18n'
 import { useTheme } from '@/context/theme-provider'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,26 +28,26 @@ export function ThemeSwitch() {
         <Button variant='ghost' size='icon' className='scale-95 rounded-full'>
           <Sun className='size-[1.2rem] scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90' />
           <Moon className='absolute size-[1.2rem] scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0' />
-          <span className='sr-only'>切换明暗</span>
+          <span className='sr-only'>{t('切换明暗')}</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align='end'>
         <DropdownMenuItem onClick={() => setTheme('light')}>
-          浅色
+          {t('浅色')}
           <Check
             size={14}
             className={cn('ms-auto', theme !== 'light' && 'hidden')}
           />
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme('dark')}>
-          深色
+          {t('深色')}
           <Check
             size={14}
             className={cn('ms-auto', theme !== 'dark' && 'hidden')}
           />
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme('system')}>
-          跟随系统
+          {t('跟随系统')}
           <Check
             size={14}
             className={cn('ms-auto', theme !== 'system' && 'hidden')}

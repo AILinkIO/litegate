@@ -1,7 +1,24 @@
 # 更新日志
 
+[English](CHANGELOG.en.md) | 简体中文
+
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 版本号以 `rebar.config` 的 release 为准，控制台侧栏与 `GET /api/version` 显示同一版本与 git commit。
+
+## 1.3.2 — 2026-11-26
+
+### 新增
+
+- **控制台界面多语言**：控制台支持中文和英文，在顶栏或登录页的语言按钮切换，选择保存在浏览器中，
+  缺省跟随浏览器语言。请求的路由决策叙述与接口文档页随界面语言返回（以 `Accept-Language` 传给后端）。
+- **告警通知语言**：新增运行参数 `alert_language`（`zh` | `en`，缺省 `zh`），决定告警通知标题与正文的语言，
+  与界面语言无关；运行参数页以下拉框设置，修改后新产生的通知立即生效。
+- **英文文档**：新增 `README.en.md`、`CHANGELOG.en.md` 与 `docs/en/`，各页顶部可切换语言。
+
+### 修复
+
+- **接口文档页看不到 `POST /api/otlp/test-metric`**：该接口的分组「链路导出」未在 openapi.json 顶层声明，
+  控制台只渲染已声明的分组。现归入「运行参数与存储」（与 `POST /api/otlp/test` 同组），并加测试检查所有分组均已声明。
 
 ## 1.3.1 — 2026-11-26
 

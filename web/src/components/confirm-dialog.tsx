@@ -9,6 +9,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { t } from '@/i18n'
 
 type ConfirmDialogProps = {
   open: boolean
@@ -54,7 +55,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         {children}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isLoading}>
-            {cancelBtnText ?? '取消'}
+            {cancelBtnText ?? t('取消')}
           </AlertDialogCancel>
           <Button
             type={form ? 'submit' : 'button'}
@@ -63,7 +64,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             variant={destructive ? 'destructive' : 'default'}
             disabled={disabled || isLoading}
           >
-            {confirmText ?? '确定'}
+            {confirmText ?? t('确定')}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -11,7 +11,10 @@
 describe() ->
     #{title => <<"敏感词"/utf8>>,
       description => <<"请求含敏感词时拒绝，或把回复里的敏感词替换成 ***"/utf8>>,
-      options_example => #{<<"words">> => [<<"示例敏感词"/utf8>>], <<"mode">> => <<"reject">>}}.
+      options_example => #{<<"words">> => [<<"示例敏感词"/utf8>>], <<"mode">> => <<"reject">>},
+      en => #{title => <<"Sensitive words">>,
+              description => <<"Reject requests containing sensitive words, or replace them with *** in replies">>,
+              options_example => #{<<"words">> => [<<"example-word">>], <<"mode">> => <<"reject">>}}}.
 
 validate(#{<<"words">> := [_ | _] = Ws} = O) ->
     case lists:all(fun(W) -> is_binary(W) andalso W =/= <<>> end, Ws) of

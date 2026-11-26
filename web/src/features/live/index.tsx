@@ -3,6 +3,7 @@ import { api, clientLabel, qs, type LiveActive, type LiveState, type LiveTarget,
 import { fmtInt, fmtMs } from '@/lib/format'
 import { useGet } from '@/lib/query'
 import { AFFINITY_HELP, STRATEGY_HELP, STRATEGY_LABEL } from '@/lib/routing'
+import { getLang, t, tk } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { Logo } from '@/assets/logo'
 import { Narrative } from '@/components/narrative'
@@ -12,8 +13,8 @@ import { Empty } from '@/components/query-state'
 import { VendorLogo } from '@/components/vendor-logo'
 
 const KIND_LABEL: Record<string, string> = {
-  rate_limit: '限流', credit: '余额不足', quota: '额度用尽', unserved: '无此模型', server: '服务端错误', network: '网络错误',
-  timeout: '超时', auth: '鉴权失败', client: '请求错误', concurrency: '并发已满',
+  rate_limit: tk('限流'), credit: tk('余额不足'), quota: tk('额度用尽'), unserved: tk('无此模型'), server: tk('服务端错误'), network: tk('网络错误'),
+  timeout: tk('超时'), auth: tk('鉴权失败'), client: tk('请求错误'), concurrency: tk('并发已满'),
 }
 
 interface Last { route: string; narrative: NarrativeLine[]; ts: number }
@@ -82,7 +83,7 @@ export function Live() {
       setActive((m) => (m[id as string] ? { ...m, [id as string]: fn(m[id as string]) } : m))
     const open = () => {
       if (es) return
-      es = new EventSource(`/api/live/stream${qs({ route: route ?? undefined })}`)
+      es = new EventSource(`/api/live/stream${qs({ route: route ?? undefined, lang: getLang() })}`)
       es.onopen = () => { connectedRef.current = true; setConnected(true) }
       es.onerror = () => { connectedRef.current = false; setConnected(false) }
       on('state', (d) => apply(d as unknown as LiveState))
@@ -198,21 +199,22 @@ export function Live() {
   const tree = (g: Pos, t: Pos) => `M ${g.x} ${g.y} V ${g.y + 12} H ${SPINE_X} V ${t.y} H ${t.x}`
   const tKey = (t: LiveTarget) => `${t.credential}|${t.upstream_model}`
 
-  const status = (t: LiveTarget): { text: string; tone: 'fg' | 'muted' | 'danger' | 'warning'; dashed?: boolean } => {
-    const n = answering(t).length
-    if (n > 0) return { text: n > 1 ? `回答中 ×${n}…` : '回答中…', tone: 'fg' }
-    if (t.state === 'exhausted') return { text: '套餐额度用尽', tone: 'danger', dashed: true }
-    if (t.cooldown) {
-      const left = Math.max(0, t.cooldown.remaining_ms - (now - fetchedAt))
-      if (left > 0) return { text: `${KIND_LABEL[t.cooldown.kind] ?? t.cooldown.kind} · ${fmtMs(Math.ceil(left / 1000) * 1000)}后恢复`, tone: 'danger', dashed: true }
+  const status = (x: LiveTarget): { text: string; tone: 'fg' | 'muted' | 'danger' | 'warning'; dashed?: boolean } => {
+    const n = answering(x).length
+    if (n > 0) return { text: n > 1 ? t('回答中 ×{n}…', { n }) : t('回答中…'), tone: 'fg' }
+    if (x.state === 'exhausted') return { text: t('套餐额度用尽'), tone: 'danger', dashed: true }
+    if (x.cooldown) {
+      const left = Math.max(0, x.cooldown.remaining_ms - (now - fetchedAt))
+      if (left > 0) return { text: t('{kind} · {time}后恢复', { kind: x.cooldown.kind in KIND_LABEL ? t(KIND_LABEL[x.cooldown.kind]) : x.cooldown.kind, time: fmtMs(Math.ceil(left / 1000) * 1000) }), tone: 'danger', dashed: true }
     }
-    if (t.concurrency) {
-      const q = t.concurrency.queued ? ` · 排队 ${t.concurrency.queued}` : ''
-      return { text: `并发 ${t.concurrency.inflight}/${t.concurrency.max}${q}`, tone: 'muted' }
+    if (x.concurrency) {
+      const c = t('并发 {inflight}/{max}', { inflight: x.concurrency.inflight, max: x.concurrency.max })
+      const q = x.concurrency.queued ? ` · ${t('排队 {n}', { n: x.concurrency.queued })}` : ''
+      return { text: c + q, tone: 'muted' }
     }
-    if (t.tier === 'reserve') return { text: '套餐保留', tone: 'warning' }
+    if (x.tier === 'reserve') return { text: t('套餐保留'), tone: 'warning' }
     // 套餐窗口说明（已用比例、重置时间）只放悬停提示：长文字会撑宽目标列，让连线错位
-    return { text: '空闲', tone: 'muted' }
+    return { text: t('空闲'), tone: 'muted' }
   }
 
   // 嵌套路由的成员按经过的路由分组显示
@@ -232,27 +234,27 @@ export function Live() {
 
   return (
     <>
-      <PageHeader title='路由视图' subtitle={
+      <PageHeader title={t('路由视图')} subtitle={
         <span className='flex items-center gap-2'>
           <span className={cn('size-2 rounded-full', connected ? 'bg-success' : 'bg-muted-foreground/50')} />
-          {connected ? '实时 · 网关正在做的决定' : '未连接，正在重试…'}
+          {connected ? t('实时 · 网关正在做的决定') : t('未连接，正在重试…')}
         </span>
       } actions={
-        <SimpleSelect className='w-56 bg-card font-mono' value={selected ?? ''} onChange={setRoute} placeholder='选择路由'
+        <SimpleSelect className='w-56 bg-card font-mono' value={selected ?? ''} onChange={setRoute} placeholder={t('选择路由')}
           options={names.map((n) => ({ value: n, label: n }))} />
       } />
 
       {!selected ? (
-        <div className='rounded-xl border bg-card'><Empty>还没有路由。创建路由并发送请求后，这里会实时显示网关的决定。</Empty></div>
+        <div className='rounded-xl border bg-card'><Empty>{t('还没有路由。创建路由并发送请求后，这里会实时显示网关的决定。')}</Empty></div>
       ) : (
         <div className='@container/live min-w-0 rounded-xl border bg-card p-5'>
           <div className='font-semibold'>
             <span className='font-mono'>{selected}</span>
-            <span className='ms-2 font-normal text-muted-foreground'>· {targets.length} 个候选{activeHere.length > 0 && ` · ${activeHere.length} 个请求进行中`}</span>
+            <span className='ms-2 font-normal text-muted-foreground'>· {t('{n} 个候选', { n: targets.length })}{activeHere.length > 0 && ` · ${t('{n} 个请求进行中', { n: activeHere.length })}`}</span>
           </div>
           <p className='mt-1 text-sm text-muted-foreground'>
-            {STRATEGY_LABEL[strategy]}：{STRATEGY_HELP[strategy]}。会话粘性：{AFFINITY_HELP[affinity]}。
-            {!!cfg?.options?.rules?.length && ` 规则 ${cfg.options.rules.length} 条。`}
+            {t('{strategy}：{help}。会话粘性：{affinity}。', { strategy: t(STRATEGY_LABEL[strategy]), help: t(STRATEGY_HELP[strategy]), affinity: t(AFFINITY_HELP[affinity]) })}
+            {!!cfg?.options?.rules?.length && ` ${t('规则 {n} 条。', { n: cfg.options.rules.length })}`}
           </p>
 
           {/* 拓扑：按卡片自身宽度（容器查询）切换——够宽时三列加连线，列宽可收缩、长文字截断，不撑破卡片；
@@ -282,7 +284,7 @@ export function Live() {
 
             {/* 客户端 */}
             <div className='z-10 flex flex-wrap justify-center gap-3 @min-[40rem]/live:grid @min-[40rem]/live:justify-stretch'>
-              {clients.length === 0 && <p className='text-sm text-muted-foreground'>最近 5 分钟没有请求</p>}
+              {clients.length === 0 && <p className='text-sm text-muted-foreground'>{t('最近 5 分钟没有请求')}</p>}
               {clients.map(([k, c], i) => (
                 <div key={k} ref={(el) => { clientRefs.current[k] = el }} className='min-w-40 rounded-xl border bg-card px-3 py-2.5 text-center'>
                   <div className='flex items-center justify-center gap-2'>
@@ -290,7 +292,7 @@ export function Live() {
                     {c.client && <VendorLogo hints={[c.client]} fallback={c.client} />}
                     <span className='text-sm font-semibold'>{clientLabel(c.client)}</span>
                   </div>
-                  <div className='mt-0.5 text-xs text-muted-foreground'>{c.key_name ?? '—'} · {fmtInt(c.requests)} 次{c.active ? ` · ${c.active} 进行中` : ''}</div>
+                  <div className='mt-0.5 text-xs text-muted-foreground'>{c.key_name ?? '—'} · {t('{n} 次', { n: fmtInt(c.requests) })}{c.active ? ` · ${t('{n} 进行中', { n: c.active })}` : ''}</div>
                 </div>
               ))}
             </div>
@@ -299,15 +301,15 @@ export function Live() {
             <div ref={gw} className='z-10 justify-self-center rounded-xl border-2 border-foreground bg-card px-6 py-4 text-center'>
               <div className='flex items-center justify-center gap-2'><Logo className='size-5' /><span className='font-semibold'>LiteGate</span></div>
               <div className='mt-0.5 font-mono text-xs text-muted-foreground'>{selected}</div>
-              <span className='mt-2 inline-block rounded-full bg-foreground px-2.5 py-0.5 text-xs font-semibold text-background'>{STRATEGY_LABEL[strategy]}</span>
+              <span className='mt-2 inline-block rounded-full bg-foreground px-2.5 py-0.5 text-xs font-semibold text-background'>{t(STRATEGY_LABEL[strategy])}</span>
             </div>
 
             {/* 候选目标 */}
             <div className='z-10 grid min-w-0 grid-cols-1 gap-2 ps-6 @min-[40rem]/live:ps-0'>
-              {targets.length === 0 && <p className='text-sm text-muted-foreground'>这条路由没有可用的候选</p>}
+              {targets.length === 0 && <p className='text-sm text-muted-foreground'>{t('这条路由没有可用的候选')}</p>}
               {groups.map((g, gi) => (
                 <div key={gi} className={cn('grid min-w-0 grid-cols-1 gap-2', gi > 0 && g.via && 'mt-1')}>
-                  {g.via && <span className='ps-1 text-xs text-muted-foreground'>嵌套路由 <span className='font-mono'>{g.via}</span></span>}
+                  {g.via && <span className='ps-1 text-xs text-muted-foreground'>{t('嵌套路由')} <span className='font-mono'>{g.via}</span></span>}
                   {g.items.map((t) => {
                     const st = status(t)
                     const on = answering(t).length > 0
@@ -337,20 +339,20 @@ export function Live() {
 
           {/* 计数 */}
           <div className='mt-6 flex items-end justify-end gap-8 border-t pt-4'>
-            {([['请求', stats?.requests ?? 0], ['改道', stats?.reroutes ?? 0], ['客户端收到的错误', stats?.errors ?? 0]] as const).map(([l, v]) => (
+            {([[t('请求'), stats?.requests ?? 0], [t('改道'), stats?.reroutes ?? 0], [t('客户端收到的错误'), stats?.errors ?? 0]] as const).map(([l, v]) => (
               <div key={l}>
                 <div className='num text-2xl leading-tight font-semibold'>{fmtInt(v)}</div>
                 <div className='text-xs text-muted-foreground'>{l}</div>
               </div>
             ))}
-            <span className='text-xs text-muted-foreground'>最近 5 分钟</span>
+            <span className='text-xs text-muted-foreground'>{t('最近 5 分钟')}</span>
           </div>
 
           {/* 最近一个请求 */}
           <div className='mt-4 border-t pt-4'>
-            <h3 className='mb-2 text-sm font-semibold'>最近一个请求是怎么路由的</h3>
+            <h3 className='mb-2 text-sm font-semibold'>{t('最近一个请求是怎么路由的')}</h3>
             {lastHere ? <Narrative lines={lastHere.narrative} />
-              : <p className='text-sm text-muted-foreground'>等待这条路由的下一个请求…（历史请求可在「请求日志」中查看路由决策）</p>}
+              : <p className='text-sm text-muted-foreground'>{t('等待这条路由的下一个请求…（历史请求可在「请求日志」中查看路由决策）')}</p>}
           </div>
         </div>
       )}

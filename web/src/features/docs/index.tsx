@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { ChevronRight, ExternalLink, Search } from 'lucide-react'
+import { getLang, t } from '@/i18n'
 import { useGet } from '@/lib/query'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -39,18 +40,18 @@ export function ApiDocs() {
   const groups = useMemo(() => {
     if (!data) return []
     const all: Endpoint[] = Object.entries(data.paths).flatMap(([path, ops]) => Object.entries(ops).map(([method, op]) => ({ method, path, op })))
-    const t = term.trim().toLowerCase()
-    const hit = (e: Endpoint) => !t || `${e.method} ${e.path} ${e.op.summary ?? ''} ${e.op.description ?? ''}`.toLowerCase().includes(t)
+    const kw = term.trim().toLowerCase()
+    const hit = (e: Endpoint) => !kw || `${e.method} ${e.path} ${e.op.summary ?? ''} ${e.op.description ?? ''}`.toLowerCase().includes(kw)
     return (data.tags ?? []).map((g) => ({ tag: g.name, items: all.filter((e) => e.op.tags?.[0] === g.name && hit(e)) })).filter((g) => g.items.length > 0)
   }, [data, term])
 
   return (
     <>
-      <PageHeader title='接口文档' subtitle={data?.info.description ?? 'LiteGate 网关与管理接口'}
-        actions={<a href='/api/openapi.json' target='_blank' rel='noopener' className='flex items-center gap-1 text-sm text-primary hover:underline'>openapi.json <ExternalLink className='size-3.5' /></a>} />
+      <PageHeader title={t('接口文档')} subtitle={data?.info.description ?? t('LiteGate 网关与管理接口')}
+        actions={<a href={`/api/openapi.json?lang=${getLang()}`} target='_blank' rel='noopener' className='flex items-center gap-1 text-sm text-primary hover:underline'>openapi.json <ExternalLink className='size-3.5' /></a>} />
       <div className='relative mb-4'>
         <Search className='absolute start-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground' />
-        <Input className='bg-card ps-8' placeholder='搜索路径、说明…' value={term} onChange={(e) => setTerm(e.target.value)} />
+        <Input className='bg-card ps-8' placeholder={t('搜索路径、说明…')} value={term} onChange={(e) => setTerm(e.target.value)} />
       </div>
       {q.error && <ErrorAlert message={q.error.message} />}
       {!data && !q.error && <Skeleton className='h-96 rounded-xl' />}
@@ -62,7 +63,7 @@ export function ApiDocs() {
           </div>
         </section>
       ))}
-      {data && groups.length === 0 && <div className='rounded-xl border bg-card'><Empty>没有匹配的接口</Empty></div>}
+      {data && groups.length === 0 && <div className='rounded-xl border bg-card'><Empty>{t('没有匹配的接口')}</Empty></div>}
     </>
   )
 }
@@ -82,7 +83,7 @@ function EndpointView({ e, first }: { e: Endpoint; first: boolean }) {
         <code className='text-[13px] break-all'>{path}</code>
         <span className='text-sm text-muted-foreground'>{op.summary}</span>
         {streams && <Badge variant='outline'>SSE</Badge>}
-        {noAuth && <Badge variant='outline'>无需鉴权</Badge>}
+        {noAuth && <Badge variant='outline'>{t('无需鉴权')}</Badge>}
       </CollapsibleTrigger>
       <CollapsibleContent className='CollapsibleContent'>
         <div className='grid gap-3 border-t bg-secondary/20 px-4 py-3 ps-11'>
@@ -91,13 +92,13 @@ function EndpointView({ e, first }: { e: Endpoint; first: boolean }) {
             <div className='overflow-x-auto rounded-lg border bg-card'>
               <Table>
                 <TableHeader>
-                  <TableRow className='[&>th]:h-8 [&>th]:text-xs [&>th]:text-muted-foreground'><TableHead>参数</TableHead><TableHead>位置</TableHead><TableHead>类型</TableHead><TableHead>说明</TableHead></TableRow>
+                  <TableRow className='[&>th]:h-8 [&>th]:text-xs [&>th]:text-muted-foreground'><TableHead>{t('参数')}</TableHead><TableHead>{t('位置')}</TableHead><TableHead>{t('类型')}</TableHead><TableHead>{t('说明')}</TableHead></TableRow>
                 </TableHeader>
                 <TableBody>
                   {op.parameters.map((p) => (
                     <TableRow key={`${p.in}-${p.name}`}>
                       <TableCell className='font-mono text-[13px]'>{p.name}{p.required && ' *'}</TableCell>
-                      <TableCell>{p.in === 'path' ? '路径' : '查询'}</TableCell>
+                      <TableCell>{p.in === 'path' ? t('路径') : t('查询')}</TableCell>
                       <TableCell className='font-mono text-[13px]'>{p.schema?.type ?? ''}</TableCell>
                       <TableCell>{p.description ?? ''}</TableCell>
                     </TableRow>
@@ -106,8 +107,8 @@ function EndpointView({ e, first }: { e: Endpoint; first: boolean }) {
               </Table>
             </div>
           )}
-          {reqExample !== undefined && <Example title='请求体示例' value={reqExample} />}
-          {respExample !== undefined && <Example title='响应示例' value={respExample} />}
+          {reqExample !== undefined && <Example title={t('请求体示例')} value={reqExample} />}
+          {respExample !== undefined && <Example title={t('响应示例')} value={respExample} />}
         </div>
       </CollapsibleContent>
     </Collapsible>

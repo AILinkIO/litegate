@@ -1,4 +1,6 @@
-export const PLAN_KINDS = { minimax: 'MiniMax Token Plan', glm: '智谱 GLM Coding Plan', kimi: 'Kimi Code 会员' } as const
+import { tk } from '@/i18n'
+
+export const PLAN_KINDS = { minimax: 'MiniMax Token Plan', glm: tk('智谱 GLM Coding Plan'), kimi: tk('Kimi Code 会员') } as const
 
 const SYMBOL: Record<string, string> = { CNY: '¥', USD: '$' }
 

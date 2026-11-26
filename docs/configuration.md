@@ -1,5 +1,7 @@
 # 配置
 
+[English](en/configuration.md) | 简体中文
+
 ## 配置分层
 
 生效值按以下优先级读取：
@@ -42,6 +44,7 @@
 | `store_queue_soft` / `store_queue_hard` | `5000` / `50000` | 存储写者积压降级阈值：超过 soft 丢弃对话、检索文档与响应缓存，超过 hard 只保留用量 |
 | `alert_silence_ms` | `1800000` | 同一事件静默期内只通知一次；upstream_down 按目标 + 规则计算，静默期内再次故障既不告警也不发恢复 |
 | `alert_recover_ms` | `60000` | 上游恢复后持续这么久没有再失败才发恢复通知 |
+| `alert_language` | `zh` | 告警通知标题与正文的语言：`zh` 或 `en`，与控制台界面语言无关 |
 
 监听器空闲超时固定为 `upstream_timeout_ms + 60s`（发送数据也会重置计时），不单独配置：HTTP/1.1 请求之间的
 keep-alive 空闲由 cowboy 的 `request_timeout`（5s）管理，HTTP/2 的空闲计时是整条连接级别的，必须高于上游超时。

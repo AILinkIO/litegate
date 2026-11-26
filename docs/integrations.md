@@ -1,5 +1,7 @@
 # 接入
 
+[English](en/integrations.md) | 简体中文
+
 ## OpenAI 兼容客户端
 
 把客户端基础地址指向网关，并使用网关 API Key：

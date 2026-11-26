@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PERIOD_LABEL } from '@/lib/limits'
 import { Meter } from '@/components/meter'
+import { t } from '@/i18n'
 
 interface TagBudget {
   scope: { type: string; tag?: string }
@@ -28,9 +29,9 @@ export function TagBudgets() {
   const [period, setPeriod] = useState<BudgetStatus['period']>('month')
   const [max, setMax] = useState('')
 
-  const put = async (t: string, body: Record<string, unknown>) => {
+  const put = async (tagName: string, body: Record<string, unknown>) => {
     try {
-      await api.put('/budgets', { scope: { type: 'tag', tag: t }, ...body })
+      await api.put('/budgets', { scope: { type: 'tag', tag: tagName }, ...body })
       await invalidate('/budgets')
       return true
     } catch (e) {
@@ -42,9 +43,9 @@ export function TagBudgets() {
   return (
     <Card className='mt-6'>
       <CardHeader>
-        <CardTitle className='text-sm'>标签预算</CardTitle>
+        <CardTitle className='text-sm'>{t('标签预算')}</CardTitle>
         <CardDescription>
-          带该标签的请求累计花费超出本期上限后返回 429，直到下个周期（UTC）；标签来自请求头 X-LiteGate-Tags、metadata.tags 或 Key 的默认标签
+          {t('带该标签的请求累计花费超出本期上限后返回 429，直到下个周期（UTC）；标签来自请求头 X-LiteGate-Tags、metadata.tags 或 Key 的默认标签')}
         </CardDescription>
       </CardHeader>
       <CardContent className='grid gap-4'>
@@ -52,7 +53,7 @@ export function TagBudgets() {
           <Table>
             <TableHeader>
               <TableRow className='[&>th]:text-xs [&>th]:text-muted-foreground'>
-                <TableHead>标签</TableHead><TableHead>周期</TableHead><TableHead>本期已用 / 上限</TableHead><TableHead>重置</TableHead><TableHead />
+                <TableHead>{t('标签')}</TableHead><TableHead>{t('周期')}</TableHead><TableHead>{t('本期已用 / 上限')}</TableHead><TableHead>{t('重置')}</TableHead><TableHead />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -61,14 +62,14 @@ export function TagBudgets() {
                 return (
                   <TableRow key={b.scope.tag}>
                     <TableCell className='font-mono text-[13px]'>{b.scope.tag}</TableCell>
-                    <TableCell>{PERIOD_LABEL[b.period]}</TableCell>
+                    <TableCell>{t(PERIOD_LABEL[b.period])}</TableCell>
                     <TableCell className='min-w-44'>
                       <span className='num'>{fmtCost(spent)} / {fmtCost(b.max_usd)}</span>
                       <Meter className='mt-1' pct={(spent / b.max_usd) * 100} />
                     </TableCell>
                     <TableCell className='text-muted-foreground'>{fmtTime(b.status?.resets_at)}</TableCell>
                     <TableCell className='text-end'>
-                      <Button variant='ghost' size='icon' aria-label='删除' onClick={() => put(b.scope.tag!, { max_usd: null })}>
+                      <Button variant='ghost' size='icon' aria-label={t('删除')} onClick={() => put(b.scope.tag!, { max_usd: null })}>
                         <Trash2 />
                       </Button>
                     </TableCell>
@@ -79,15 +80,15 @@ export function TagBudgets() {
           </Table>
         )}
         <div className='flex flex-wrap items-center gap-2'>
-          <Input className='w-40' placeholder='标签' value={tag} onChange={(e) => setTag(e.target.value)} />
+          <Input className='w-40' placeholder={t('标签')} value={tag} onChange={(e) => setTag(e.target.value)} />
           <Select value={period} onValueChange={(v) => setPeriod(v as BudgetStatus['period'])}>
             <SelectTrigger className='w-24'><SelectValue /></SelectTrigger>
-            <SelectContent>{Object.entries(PERIOD_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent>
+            <SelectContent>{Object.entries(PERIOD_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{t(v)}</SelectItem>)}</SelectContent>
           </Select>
-          <Input className='w-36' type='number' placeholder='上限（美元）' value={max} onChange={(e) => setMax(e.target.value)} />
+          <Input className='w-36' type='number' placeholder={t('上限（美元）')} value={max} onChange={(e) => setMax(e.target.value)} />
           <Button variant='outline' disabled={!tag.trim() || !(Number(max) > 0)}
             onClick={async () => { if (await put(tag.trim(), { period, max_usd: Number(max) })) { setTag(''); setMax('') } }}>
-            <Plus /> 设置
+            <Plus /> {t('设置')}
           </Button>
         </div>
       </CardContent>

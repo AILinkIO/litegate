@@ -15,7 +15,10 @@ describe() ->
     #{title => <<"远程节点"/utf8>>,
       description => <<"调用远程 Erlang 节点上的中间件模块（分布式 erpc）；节点独立部署、独立升级"/utf8>>,
       options_example => #{<<"node">> => <<"mw@127.0.0.1">>, <<"module">> => <<"my_mw">>, <<"config">> => #{},
-                           <<"events">> => false, <<"timeout_ms">> => ?DEFAULT_TIMEOUT}}.
+                           <<"events">> => false, <<"timeout_ms">> => ?DEFAULT_TIMEOUT},
+      en => #{title => <<"Remote node">>,
+              description => <<"Call a middleware module on a remote Erlang node (distributed erpc); "
+                               "the node is deployed and upgraded independently">>}}.
 
 validate(#{<<"node">> := N, <<"module">> := M} = O) when is_binary(N), is_binary(M) ->
     Checks = [{re:run(N, "^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$") =/= nomatch, <<"node must look like name@host">>},

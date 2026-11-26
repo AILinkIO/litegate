@@ -2,10 +2,11 @@ import { SearchIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSearch } from '@/context/search-provider'
 import { Button } from './ui/button'
+import { t } from '@/i18n'
 
 export function Search({
   className = '',
-  placeholder = '搜索',
+  placeholder = t('搜索'),
   ...props
 }: React.ComponentProps<'button'> & { placeholder?: string }) {
   const { setOpen } = useSearch()

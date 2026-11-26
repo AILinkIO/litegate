@@ -18,6 +18,7 @@ import { visibleNav } from './nav'
 import { useGet } from '@/lib/query'
 import type { VersionInfo } from '@/lib/api'
 import { NavUser } from './nav-user'
+import { t } from '@/i18n'
 
 function VersionBadge() {
   const { state } = useSidebar()
@@ -50,7 +51,7 @@ export function AppSidebar() {
                 </div>
                 <div className='grid flex-1 text-start leading-tight'>
                   <span className='truncate text-[15px] font-semibold'>LiteGate</span>
-                  <span className='truncate text-xs text-muted-foreground'>LLM 网关</span>
+                  <span className='truncate text-xs text-muted-foreground'>{t('LLM 网关')}</span>
                 </div>
               </Link>
             </SidebarMenuButton>
@@ -60,14 +61,14 @@ export function AppSidebar() {
       <SidebarContent>
         {groups.map((g) => (
           <SidebarGroup key={g.title}>
-            <SidebarGroupLabel>{g.title}</SidebarGroupLabel>
+            <SidebarGroupLabel>{t(g.title)}</SidebarGroupLabel>
             <SidebarMenu>
               {g.items.map((i) => (
                 <SidebarMenuItem key={i.url}>
-                  <SidebarMenuButton asChild isActive={active(i.url)} tooltip={i.title}>
+                  <SidebarMenuButton asChild isActive={active(i.url)} tooltip={t(i.title)}>
                     <Link to={i.url} onClick={() => setOpenMobile(false)}>
                       <i.icon />
-                      <span>{i.title}</span>
+                      <span>{t(i.title)}</span>
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

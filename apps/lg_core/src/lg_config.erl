@@ -113,6 +113,8 @@ defaults() ->
       alert_silence_ms => 30 * 60 * 1000,
       %% 上游恢复需持续健康这么久才发恢复通知，避免故障/恢复抖动刷屏（T27）
       alert_recover_ms => 60000,
+      %% 告警通知文案语言：zh | en
+      alert_language => <<"zh">>,
       %% /metrics 抓取令牌，非空时要求 Authorization: Bearer <token>
       metrics_token => <<>>,
       %% 控制台登录：false（默认，单机）时控制台与管理 API 无需登录，访问者视为管理员

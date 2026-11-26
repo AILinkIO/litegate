@@ -6,6 +6,7 @@ import { api, seg, type ApiKey, type Credential, type Route } from '@/lib/api'
 import { useGet, useInvalidate } from '@/lib/query'
 import { STRATEGY_LABEL } from '@/lib/routing'
 import { cn } from '@/lib/utils'
+import { t } from '@/i18n'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -62,10 +63,10 @@ export function Routes() {
 
   return (
     <>
-      <PageHeader title='路由表' subtitle='对外宣告的模型名：客户端请求中的 model 字段对应这里的路由名'
-        actions={<Button onClick={() => open(null)} disabled={!creds.data?.length}><Plus /> 新建路由</Button>} />
+      <PageHeader title={t('路由表')} subtitle={t('对外宣告的模型名：客户端请求中的 model 字段对应这里的路由名')}
+        actions={<Button onClick={() => open(null)} disabled={!creds.data?.length}><Plus /> {t('新建路由')}</Button>} />
       {creds.data?.length === 0 && (
-        <Alert className='mb-4'><AlertDescription>先添加上游凭证，才能创建路由。</AlertDescription></Alert>
+        <Alert className='mb-4'><AlertDescription>{t('先添加上游凭证，才能创建路由。')}</AlertDescription></Alert>
       )}
       {routes.error && <ErrorAlert message={routes.error.message} />}
       {!routes.data && !routes.error && <Skeleton className='h-48 rounded-xl' />}
@@ -79,62 +80,62 @@ export function Routes() {
                 <div className='min-w-0 flex-1 basis-80'>
                   <div className='flex flex-wrap items-center gap-1.5'>
                     <span className='font-mono font-semibold'>{r.name}</span>
-                    {isWildcard(r.name) && <Badge variant='info'>通配</Badge>}
-                    {o.strategy && o.strategy !== 'weighted' && <Badge variant='muted'>{STRATEGY_LABEL[o.strategy]}</Badge>}
-                    {!!o.rules?.length && <Badge variant='muted'>规则 {o.rules.length}</Badge>}
-                    {o.redact && <Badge variant='muted'>脱敏</Badge>}
-                    {!!o.cache_ttl_s && <Badge variant='muted'>缓存 {o.cache_ttl_s}s</Badge>}
-                    {o.affinity === 'off' && <Badge variant='outline'>无粘性</Badge>}
+                    {isWildcard(r.name) && <Badge variant='info'>{t('通配')}</Badge>}
+                    {o.strategy && o.strategy !== 'weighted' && <Badge variant='muted'>{t(STRATEGY_LABEL[o.strategy])}</Badge>}
+                    {!!o.rules?.length && <Badge variant='muted'>{t('规则 {n}', { n: o.rules.length })}</Badge>}
+                    {o.redact && <Badge variant='muted'>{t('脱敏')}</Badge>}
+                    {!!o.cache_ttl_s && <Badge variant='muted'>{t('缓存 {n}s', { n: o.cache_ttl_s })}</Badge>}
+                    {o.affinity === 'off' && <Badge variant='outline'>{t('无粘性')}</Badge>}
                   </div>
-                  {!!r.aliases?.length && <div className='mt-0.5 text-xs text-muted-foreground'>别名 <span className='font-mono'>{r.aliases.join(', ')}</span></div>}
+                  {!!r.aliases?.length && <div className='mt-0.5 text-xs text-muted-foreground'>{t('别名')} <span className='font-mono'>{r.aliases.join(', ')}</span></div>}
                   <div className='mt-2 grid gap-1'>
-                    {sorted.map((t, j) => {
-                      const c = credById.get(t.credential)
+                    {sorted.map((tg, j) => {
+                      const c = credById.get(tg.credential)
                       return (
-                        <div key={j} className={cn('flex items-center gap-1.5 text-sm', !t.enabled && 'text-muted-foreground line-through')}>
-                          {t.route ? (
-                            <><CornerDownRight className='size-3.5 text-muted-foreground' />路由 <code className='text-[13px]'>{t.route}</code></>
+                        <div key={j} className={cn('flex items-center gap-1.5 text-sm', !tg.enabled && 'text-muted-foreground line-through')}>
+                          {tg.route ? (
+                            <><CornerDownRight className='size-3.5 text-muted-foreground' />{t('路由')} <code className='text-[13px]'>{tg.route}</code></>
                           ) : (
                             <>
-                              <VendorLogo hints={[c?.provider, c?.base_url, t.upstream_model]} />
-                              <span className='text-subtle-foreground'>{c?.name ?? t.credential}</span>
+                              <VendorLogo hints={[c?.provider, c?.base_url, tg.upstream_model]} />
+                              <span className='text-subtle-foreground'>{c?.name ?? tg.credential}</span>
                               <span className='text-muted-foreground'>·</span>
-                              <code className='text-[13px]'>{t.upstream_model}</code>
+                              <code className='text-[13px]'>{tg.upstream_model}</code>
                             </>
                           )}
-                          {r.targets.length > 1 && <span className='num text-xs text-muted-foreground'>P{t.priority} · W{t.weight}</span>}
+                          {r.targets.length > 1 && <span className='num text-xs text-muted-foreground'>P{tg.priority} · W{tg.weight}</span>}
                         </div>
                       )
                     })}
-                    {r.fallbacks.length > 0 && <div className='text-xs text-muted-foreground'>失败后回退到 <span className='font-mono'>{r.fallbacks.join(' → ')}</span></div>}
+                    {r.fallbacks.length > 0 && <div className='text-xs text-muted-foreground'>{t('失败后回退到')} <span className='font-mono'>{r.fallbacks.join(' → ')}</span></div>}
                   </div>
                 </div>
                 <div className='w-44 text-sm'>
-                  <div>{r.access === 'all' ? '所有 Key' : `${r.access.length} 个 Key`}</div>
-                  {limitSummary(r.limit) && <div className='text-xs text-muted-foreground'>限额 {limitSummary(r.limit)}</div>}
-                  {!!r.key_limits?.length && <div className='text-xs text-muted-foreground'>{r.key_limits.length} 个 Key 例外</div>}
+                  <div>{r.access === 'all' ? t('所有 Key') : t('{n} 个 Key', { n: r.access.length })}</div>
+                  {limitSummary(r.limit) && <div className='text-xs text-muted-foreground'>{t('限额 {limit}', { limit: limitSummary(r.limit) ?? '' })}</div>}
+                  {!!r.key_limits?.length && <div className='text-xs text-muted-foreground'>{t('{n} 个 Key 例外', { n: r.key_limits.length })}</div>}
                 </div>
                 <div className='ms-auto flex items-center gap-1'>
-                  <Switch checked={r.enabled} onCheckedChange={() => toggle(r)} aria-label='启用' />
-                  <Button variant='ghost' size='icon' className='ms-2' aria-label='编辑' onClick={() => open(r)}><Pencil /></Button>
-                  <Button variant='ghost' size='icon' aria-label='删除' onClick={() => setDeleting(r)}><Trash2 /></Button>
+                  <Switch checked={r.enabled} onCheckedChange={() => toggle(r)} aria-label={t('启用')} />
+                  <Button variant='ghost' size='icon' className='ms-2' aria-label={t('编辑')} onClick={() => open(r)}><Pencil /></Button>
+                  <Button variant='ghost' size='icon' aria-label={t('删除')} onClick={() => setDeleting(r)}><Trash2 /></Button>
                 </div>
               </div>
             )
           })}
-          {routes.data.length === 0 && <Empty>还没有路由。路由决定客户端能调用哪些模型、实际转发到哪个上游。</Empty>}
+          {routes.data.length === 0 && <Empty>{t('还没有路由。路由决定客户端能调用哪些模型、实际转发到哪个上游。')}</Empty>}
         </div>
       )}
       {editing && (
         <RouteEditor route={editing.route} initial={editing.draft} credentials={creds.data ?? []} routes={routes.data ?? []}
           keys={keys.data ?? []} onClose={() => setEditing(null)} onSaved={() => invalidate('/routes', '/live')} />
       )}
-      <ConfirmDialog open={deleting !== null} onOpenChange={(v) => !v && setDeleting(null)} title='删除路由' destructive confirmText='删除'
-        desc={`确定删除路由「${deleting?.name}」？使用这个模型名的客户端将收到 404。`}
+      <ConfirmDialog open={deleting !== null} onOpenChange={(v) => !v && setDeleting(null)} title={t('删除路由')} destructive confirmText={t('删除')}
+        desc={t('确定删除路由「{name}」？使用这个模型名的客户端将收到 404。', { name: deleting?.name ?? '' })}
         handleConfirm={async () => {
           try {
             await api.del(`/routes/${seg(deleting!.name)}`)
-            toast.success('已删除')
+            toast.success(t('已删除'))
             await invalidate('/routes')
           } catch (e) {
             toast.error((e as Error).message)

@@ -1,5 +1,7 @@
 # 可观测性
 
+[English](en/observability.md) | 简体中文
+
 ## 请求日志
 
 每个网关请求都会记录状态、协议、路由、凭证、上游模型、客户端、耗时、token、费用、路由尝试和错误。
@@ -59,6 +61,7 @@ LiteGate 会在每个请求导出一条 trace，每个上游尝试导出一个�
 
 upstream_down 告警受 `alert_silence_ms` 静默期约束，恢复通知需持续健康 `alert_recover_ms` 才发送，
 期间再次失败视为仍在故障、不重复告警。发送队列上限 1000 条，超出的通知在告警历史中记为 `dropped`。
+通知文案的语言由运行参数 `alert_language`（`zh` / `en`）决定。
 某事件没有启用的规则时不做任何判定。
 
 `/health` 提供轻量服务健康检查：

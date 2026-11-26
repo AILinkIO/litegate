@@ -6,6 +6,7 @@ import { api, qs, seg, type CatalogModel, type CatalogProvider, type SyncStatus 
 import { fmtInt, fmtPrice, fmtTime } from '@/lib/format'
 import { useGet, useInvalidate } from '@/lib/query'
 import { cn } from '@/lib/utils'
+import { t, tk } from '@/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -21,9 +22,9 @@ import { ErrorAlert } from '@/components/query-state'
 import { VendorLogo } from '@/components/vendor-logo'
 
 const SOURCE: Record<CatalogModel['source'], { label: string; variant: 'muted' | 'info' | 'warning' }> = {
-  synced: { label: '同步', variant: 'muted' },
-  overridden: { label: '已覆盖', variant: 'info' },
-  custom: { label: '自定义', variant: 'warning' },
+  synced: { label: tk('同步'), variant: 'muted' },
+  overridden: { label: tk('已覆盖'), variant: 'info' },
+  custom: { label: tk('自定义'), variant: 'warning' },
 }
 
 export function Models() {
@@ -44,8 +45,8 @@ export function Models() {
 
   // 输入停顿 300ms 后再搜索
   useEffect(() => {
-    const t = setTimeout(() => { setQ(search); setPage(0) }, 300)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => { setQ(search); setPage(0) }, 300)
+    return () => clearTimeout(timer)
   }, [search])
 
   const providers = useGet<CatalogProvider[]>('/catalog/providers')
@@ -57,7 +58,7 @@ export function Models() {
     setSyncing(true)
     try {
       const r = await api.post<{ providers: number; models: number; changed_models: number }>('/catalog/sync')
-      toast.success(`同步完成：${r.providers} 个供应商，${r.models} 个模型（${r.changed_models} 个有变化）`)
+      toast.success(t('同步完成：{providers} 个供应商，{models} 个模型（{changed} 个有变化）', { providers: r.providers, models: r.models, changed: r.changed_models }))
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -74,12 +75,12 @@ export function Models() {
       const counts = provs.map((p) => (p && typeof p === 'object' && 'models' in p && p.models && typeof p.models === 'object'
         ? Object.keys(p.models).length : -1))
       if (counts.length === 0 || counts.some((n) => n < 0)) {
-        toast.error('不是 models.dev 的 api.json：每个顶层值都应是带 models 的供应商')
+        toast.error(t('不是 models.dev 的 api.json：每个顶层值都应是带 models 的供应商'))
         return
       }
       setImporting({ name: f.name, data, providers: counts.length, models: counts.reduce((a, b) => a + b, 0) })
     } catch {
-      toast.error('文件不是有效的 JSON')
+      toast.error(t('文件不是有效的 JSON'))
     }
   }
 
@@ -88,7 +89,7 @@ export function Models() {
     setImportBusy(true)
     try {
       const r = await api.post<{ providers: number; models: number; changed_models: number }>('/catalog/import', importing.data)
-      toast.success(`导入完成：${r.providers} 个供应商，${r.models} 个模型（${r.changed_models} 个有变化）`)
+      toast.success(t('导入完成：{providers} 个供应商，{models} 个模型（{changed} 个有变化）', { providers: r.providers, models: r.models, changed: r.changed_models }))
       setImporting(null)
     } catch (e) {
       toast.error((e as Error).message)
@@ -101,36 +102,40 @@ export function Models() {
   const s = sync.data
   return (
     <>
-      <PageHeader title='模型目录'
-        subtitle={s?.at ? `models.dev 同步于 ${fmtTime(s.at)}${s.status === 'error' ? `（最近一次失败：${s.error}）` : ''}` : '尚未同步 models.dev'}
+      <PageHeader title={t('模型目录')}
+        subtitle={s?.at
+          ? (s.status === 'error'
+            ? t('models.dev 同步于 {time}（最近一次失败：{error}）', { time: fmtTime(s.at), error: s.error ?? '' })
+            : t('models.dev 同步于 {time}', { time: fmtTime(s.at) }))
+          : t('尚未同步 models.dev')}
         actions={<>
-          <Button variant='outline' onClick={() => setCreating(true)}><Plus /> 自定义模型</Button>
+          <Button variant='outline' onClick={() => setCreating(true)}><Plus /> {t('自定义模型')}</Button>
           <Button variant='outline' asChild>
             <label className='cursor-pointer'>
-              <Upload /> 导入 api.json
+              <Upload /> {t('导入 api.json')}
               {/* 清空 value：同一个文件可以再次选择 */}
               <input hidden type='file' accept='application/json,.json'
                 onChange={(e) => { void pickImport(e.target.files?.[0]); e.target.value = '' }} />
             </label>
           </Button>
-          <Button onClick={runSync} disabled={syncing}><RefreshCw className={cn(syncing && 'animate-spin')} /> {syncing ? '同步中…' : '同步 models.dev'}</Button>
+          <Button onClick={runSync} disabled={syncing}><RefreshCw className={cn(syncing && 'animate-spin')} /> {syncing ? t('同步中…') : t('同步 models.dev')}</Button>
         </>} />
-      <ConfirmDialog open={importing !== null} onOpenChange={(o) => !o && setImporting(null)} title='导入 models.dev 目录'
-        confirmText='导入' isLoading={importBusy} handleConfirm={runImport}
-        desc={importing ? `${importing.name}：${importing.providers} 个供应商、${importing.models} 个模型。导入与「同步 models.dev」一样整体替换同步数据，文件中没有的供应商和模型会被移除；覆盖与自定义模型不受影响。` : ''} />
+      <ConfirmDialog open={importing !== null} onOpenChange={(o) => !o && setImporting(null)} title={t('导入 models.dev 目录')}
+        confirmText={t('导入')} isLoading={importBusy} handleConfirm={runImport}
+        desc={importing ? t('{name}：{providers} 个供应商、{models} 个模型。导入与「同步 models.dev」一样整体替换同步数据，文件中没有的供应商和模型会被移除；覆盖与自定义模型不受影响。', { name: importing.name, providers: importing.providers, models: importing.models }) : ''} />
       <div className='mb-3 flex flex-wrap gap-2'>
         <div className='w-64'>
-          <Combobox value={provider} onChange={(v) => { setProvider(v); setPage(0) }} clearable placeholder='全部供应商' className='bg-card'
+          <Combobox value={provider} onChange={(v) => { setProvider(v); setPage(0) }} clearable placeholder={t('全部供应商')} className='bg-card'
             options={(providers.data ?? []).map((p) => ({ value: p.id, label: (
               <span className='flex items-center gap-1.5'><VendorLogo hints={[p.id, p.api, p.name]} fallback={p.name} />{p.name}</span>
             ), keywords: p.name, hint: p.id }))} />
         </div>
         <div className='relative min-w-60 flex-1'>
           <Search className='absolute start-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground' />
-          <Input className='bg-card ps-8' placeholder='搜索 id / 名称 / 系列' value={search} onChange={(e) => setSearch(e.target.value)} />
+          <Input className='bg-card ps-8' placeholder={t('搜索 id / 名称 / 系列')} value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <SimpleSelect className='w-32 bg-card' value={source} onChange={(v) => { setSource(v); setPage(0) }}
-          options={[{ value: '', label: '全部来源' }, { value: 'synced', label: '同步' }, { value: 'overridden', label: '已覆盖' }, { value: 'custom', label: '自定义' }]} />
+          options={[{ value: '', label: t('全部来源') }, { value: 'synced', label: t('同步') }, { value: 'overridden', label: t('已覆盖') }, { value: 'custom', label: t('自定义') }]} />
       </div>
       {models.error && <ErrorAlert message={models.error.message} />}
       <div className='overflow-hidden rounded-xl border bg-card'>
@@ -138,11 +143,11 @@ export function Models() {
           <Table>
             <TableHeader>
               <TableRow className='[&>th]:h-10 [&>th]:text-xs [&>th]:text-muted-foreground'>
-                <TableHead className='ps-5'>模型</TableHead>
-                <TableHead>供应商</TableHead>
-                <TableHead className='text-end'>上下文</TableHead>
-                <TableHead className='text-end'>输入 / 输出（$/M）</TableHead>
-                <TableHead>来源</TableHead>
+                <TableHead className='ps-5'>{t('模型')}</TableHead>
+                <TableHead>{t('供应商')}</TableHead>
+                <TableHead className='text-end'>{t('上下文')}</TableHead>
+                <TableHead className='text-end'>{t('输入 / 输出（$/M）')}</TableHead>
+                <TableHead>{t('来源')}</TableHead>
                 <TableHead className='pe-5' />
               </TableRow>
             </TableHeader>
@@ -158,22 +163,22 @@ export function Models() {
                   </TableCell>
                   <TableCell className='num text-end'>{m.limit?.context ? fmtInt(m.limit.context) : '—'}</TableCell>
                   <TableCell className='num text-end'>{fmtPrice(m.cost?.input)} / {fmtPrice(m.cost?.output)}</TableCell>
-                  <TableCell><Badge variant={SOURCE[m.source].variant}>{SOURCE[m.source].label}</Badge></TableCell>
+                  <TableCell><Badge variant={SOURCE[m.source].variant}>{t(SOURCE[m.source].label)}</Badge></TableCell>
                   <TableCell className='pe-5 text-end whitespace-nowrap'>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <Button variant='ghost' size='icon' aria-label='用此模型创建路由'
+                        <Button variant='ghost' size='icon' aria-label={t('用此模型创建路由')}
                           onClick={() => navigate({ to: '/routes', search: { provider: m.provider, model: m.id } })}><RouteIcon /></Button>
                       </TooltipTrigger>
-                      <TooltipContent>用此模型创建路由</TooltipContent>
+                      <TooltipContent>{t('用此模型创建路由')}</TooltipContent>
                     </Tooltip>
-                    <Button variant='ghost' size='icon' aria-label='编辑' onClick={() => setEditing(m)}><Pencil /></Button>
+                    <Button variant='ghost' size='icon' aria-label={t('编辑')} onClick={() => setEditing(m)}><Pencil /></Button>
                   </TableCell>
                 </TableRow>
               ))}
               {models.data?.items.length === 0 && (
                 <TableRow><TableCell colSpan={6} className='py-10 text-center text-muted-foreground'>
-                  没有模型{s?.status === 'never' ? '，先点击右上角同步 models.dev' : ''}
+                  {s?.status === 'never' ? t('没有模型，先点击右上角同步 models.dev') : t('没有模型')}
                 </TableCell></TableRow>
               )}
             </TableBody>
@@ -261,40 +266,40 @@ function ModelDialog({ model, providers, onClose, onSaved }: {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className='sm:max-w-xl'>
         <DialogHeader>
-          <DialogTitle>{isNew ? '新增自定义模型' : <span className='font-mono'>{model.provider} / {model.id}</span>}</DialogTitle>
-          {!isNew && <DialogDescription>填写的字段会覆盖 models.dev 的值，留空则继承；同步不会改动这里的设置。价格单位：美元 / 百万 token。</DialogDescription>}
+          <DialogTitle>{isNew ? t('新增自定义模型') : <span className='font-mono'>{model.provider} / {model.id}</span>}</DialogTitle>
+          {!isNew && <DialogDescription>{t('填写的字段会覆盖 models.dev 的值，留空则继承；同步不会改动这里的设置。价格单位：美元 / 百万 token。')}</DialogDescription>}
         </DialogHeader>
         <div className='grid gap-4 sm:grid-cols-2'>
           {isNew && (
             <>
-              <Field label='供应商 id' required hint='可填目录外的自定义供应商'>
+              <Field label={t('供应商 id')} required hint={t('可填目录外的自定义供应商')}>
                 <Combobox allowCustom value={provider || null} onChange={(v) => setProvider(v ?? '')}
                   options={(providers ?? []).map((p) => ({ value: p.id, label: p.id, keywords: p.name, hint: p.name }))} />
               </Field>
-              <Field label='模型 id' required><Input className='font-mono' value={id} onChange={(e) => setId(e.target.value)} /></Field>
+              <Field label={t('模型 id')} required><Input className='font-mono' value={id} onChange={(e) => setId(e.target.value)} /></Field>
             </>
           )}
-          <div className='sm:col-span-2'>{input('name', '显示名称', base?.name)}</div>
-          {input('context', '上下文长度', base?.limit?.context)}
-          {input('output', '最大输出', base?.limit?.output)}
-          {input('input', '输入价格', base?.cost?.input)}
-          {input('outputPrice', '输出价格', base?.cost?.output)}
-          {input('cacheRead', '缓存读价格', base?.cost?.cache_read)}
-          {input('cacheWrite', '缓存写价格', base?.cost?.cache_write)}
-          {input('image', '图片价格（每张）', base?.cost?.image, '图片生成模型按张计费')}
-          {input('tts', '语音价格（每百万字符）', base?.cost?.tts, '语音合成模型按输入字符计费')}
+          <div className='sm:col-span-2'>{input('name', t('显示名称'), base?.name)}</div>
+          {input('context', t('上下文长度'), base?.limit?.context)}
+          {input('output', t('最大输出'), base?.limit?.output)}
+          {input('input', t('输入价格'), base?.cost?.input)}
+          {input('outputPrice', t('输出价格'), base?.cost?.output)}
+          {input('cacheRead', t('缓存读价格'), base?.cost?.cache_read)}
+          {input('cacheWrite', t('缓存写价格'), base?.cost?.cache_write)}
+          {input('image', t('图片价格（每张）'), base?.cost?.image, t('图片生成模型按张计费'))}
+          {input('tts', t('语音价格（每百万字符）'), base?.cost?.tts, t('语音合成模型按输入字符计费'))}
         </div>
         <DialogFooter>
           {!isNew && model.source !== 'synced' && (
             <Button variant='ghost' className='me-auto text-destructive' disabled={busy}
               onClick={() => run(() => api.del(`/catalog/models/${seg(model.provider)}/${seg(model.id)}`),
-                model.source === 'custom' ? '已删除自定义模型' : '已恢复 models.dev 的值')}>
-              {model.source === 'custom' ? '删除' : '恢复默认'}
+                model.source === 'custom' ? t('已删除自定义模型') : t('已恢复 models.dev 的值'))}>
+              {model.source === 'custom' ? t('删除') : t('恢复默认')}
             </Button>
           )}
-          <Button variant='outline' onClick={onClose}>取消</Button>
+          <Button variant='outline' onClick={onClose}>{t('取消')}</Button>
           <Button disabled={busy || !provider.trim() || !id.trim()}
-            onClick={() => run(() => api.put(`/catalog/models/${seg(provider.trim())}/${seg(id.trim())}`, overlayFromFields(f)), '已保存')}>保存</Button>
+            onClick={() => run(() => api.put(`/catalog/models/${seg(provider.trim())}/${seg(id.trim())}`, overlayFromFields(f)), t('已保存'))}>{t('保存')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

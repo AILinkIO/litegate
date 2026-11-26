@@ -11,7 +11,9 @@
 describe() ->
     #{title => <<"请求参数改写"/utf8>>,
       description => <<"给请求设置或删除字段，例如统一限制 max_tokens、去掉 temperature"/utf8>>,
-      options_example => #{<<"set">> => #{<<"max_tokens">> => 4096}, <<"unset">> => [<<"temperature">>]}}.
+      options_example => #{<<"set">> => #{<<"max_tokens">> => 4096}, <<"unset">> => [<<"temperature">>]},
+      en => #{title => <<"Request parameter override">>,
+              description => <<"Set or remove request fields, e.g. cap max_tokens everywhere or drop temperature">>}}.
 
 validate(O) when is_map(O) ->
     Set = maps:get(<<"set">>, O, #{}),

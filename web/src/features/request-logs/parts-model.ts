@@ -1,4 +1,5 @@
 import type { LogEntry } from '@/lib/api'
+import { t } from '@/i18n'
 
 export const ENDPOINT: Record<LogEntry['format'], string> = {
   openai: '/v1/chat/completions',
@@ -11,13 +12,13 @@ export const ENDPOINT: Record<LogEntry['format'], string> = {
 }
 
 export function affinityLabel(a: string): string {
-  if (a === 'hit') return '命中'
-  if (a === 'miss') return '新会话'
+  if (a === 'hit') return t('命中')
+  if (a === 'miss') return t('新会话')
   const why: Record<string, string> = {
-    cache_cold: '缓存已冷，重新选择', cooling: '原目标冷却中', plan_window_full: '原目标套餐窗口将满',
-    concurrency_full: '原目标并发已满', target_gone: '原目标已不在路由中',
+    cache_cold: t('缓存已冷，重新选择'), cooling: t('原目标冷却中'), plan_window_full: t('原目标套餐窗口将满'),
+    concurrency_full: t('原目标并发已满'), target_gone: t('原目标已不在路由中'),
   }
-  return a.startsWith('broken:') ? `放弃（${why[a.slice(7)] ?? a.slice(7)}）` : a
+  return a.startsWith('broken:') ? t('放弃（{why}）', { why: why[a.slice(7)] ?? a.slice(7) }) : a
 }
 
 /** 消息 content 可能是字符串或内容块数组 */

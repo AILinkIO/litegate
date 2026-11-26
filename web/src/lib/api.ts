@@ -1,4 +1,6 @@
 // 控制台 API 客户端：会话 cookie 由浏览器自动携带
+import { acceptLanguage, t, tk } from '@/i18n'
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -18,7 +20,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const res = await fetch(`/api${path}`, {
     method,
     credentials: 'same-origin',
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    // Accept-Language：后端生成的决策叙述、接口文档按界面语言返回
+    headers: body === undefined ? { 'accept-language': acceptLanguage() } : { 'accept-language': acceptLanguage(), 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const data = res.status === 204 ? null : await res.json().catch(() => null)
@@ -116,7 +119,7 @@ export type PlanKind = 'minimax' | 'glm' | 'kimi'
 export type BalanceKind = 'deepseek' | 'moonshot' | 'openrouter' | 'newapi'
 
 export const BALANCE_KINDS: Record<BalanceKind, string> = {
-  deepseek: 'DeepSeek', moonshot: 'Kimi（Moonshot 开放平台）', openrouter: 'OpenRouter', newapi: 'New API / One API 中转站',
+  deepseek: 'DeepSeek', moonshot: tk('Kimi（Moonshot 开放平台）'), openrouter: 'OpenRouter', newapi: tk('New API / One API 中转站'),
 }
 
 export interface BalanceStatus {
@@ -551,12 +554,12 @@ export interface AlertRecord {
   deliveries: { channel: string; channel_name: string; status: 'pending' | 'ok' | 'error'; error?: string }[]
 }
 
-/** 客户端工具的显示名（未知的自报名原样显示） */
+/** 客户端工具的显示名（未知的自报名原样显示；渲染时 t()，clientLabel 已含） */
 export const CLIENT_LABEL: Record<string, string> = {
   'claude-code': 'Claude Code', codex: 'Codex', opencode: 'opencode', 'openai-sdk': 'OpenAI SDK',
-  'anthropic-sdk': 'Anthropic SDK', other: '其他', litegate: '网关内部（意图判断）',
+  'anthropic-sdk': 'Anthropic SDK', other: tk('其他'), litegate: tk('网关内部（意图判断）'),
 }
-export const clientLabel = (c?: string | null) => (c ? CLIENT_LABEL[c] ?? c : '—')
+export const clientLabel = (c?: string | null) => (c ? (CLIENT_LABEL[c] ? t(CLIENT_LABEL[c]) : c) : '—')
 
 // ---- 实时路由视图（/api/live/state、/api/live/stream） ----
 

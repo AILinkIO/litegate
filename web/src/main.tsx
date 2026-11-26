@@ -5,6 +5,7 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { ApiError } from '@/lib/api'
 import { AuthProvider } from './context/auth'
 import { ThemeProvider } from './context/theme-provider'
+import { I18nProvider } from './i18n/provider'
 import { routeTree } from './routeTree.gen'
 import './styles/index.css'
 
@@ -38,9 +39,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <AuthProvider>
-          <RouterProvider router={router} />
-        </AuthProvider>
+        <I18nProvider>
+          <AuthProvider>
+            <RouterProvider router={router} />
+          </AuthProvider>
+        </I18nProvider>
       </ThemeProvider>
     </QueryClientProvider>
   </StrictMode>,

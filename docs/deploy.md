@@ -1,5 +1,7 @@
 # 单机部署（systemd）
 
+[English](en/deploy.md) | 简体中文
+
 ## 构建
 
 构建机需要：Erlang/OTP ≥ 27、rebar3、CMake、C++23 编译器、`libicu-dev`、Node.js、git。

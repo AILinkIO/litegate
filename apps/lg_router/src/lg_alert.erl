@@ -12,6 +12,7 @@
 %% （1s、2s 间隔）；发送结果写回通知记录。发送队列超过 ?SENDER_MAX 条时新通知直接记为 dropped
 %% 并计数 litegate_alert_dropped_total（渠道长期不可达时邮箱有界）。
 %% 上报接口先查规则缓存（lg_alerts:has_rules/1），该事件没有启用规则时直接返回、不投递。
+%% 通知文案语言由运行参数 alert_language（zh | en）决定，生成通知时读取，改了立即生效。
 -module(lg_alert).
 -behaviour(gen_server).
 
@@ -19,6 +20,7 @@
 
 -export([start_link/0, target_result/3, budget/4, plan_status/3, balance_status/3,
          login_brute_force/3, test_channel/1, history/1, flush/0]).
+-export([lang/0, copy/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(CHECK_MS, 60000).
@@ -77,8 +79,8 @@ cast(Event, Msg) ->
 test_channel(Id) ->
     case lg_alerts:channel(Id) of
         {ok, C} ->
-            lg_notify:send(C, #{event => test, level => info, title => <<"测试消息"/utf8>>,
-                                text => <<"LiteGate 告警渠道配置正确。"/utf8>>, ts => lg_time:now_ms()});
+            {Title, Text} = copy(lang(), test, []),
+            lg_notify:send(C, #{event => test, level => info, title => Title, text => Text, ts => lg_time:now_ms()});
         not_found ->
             {error, not_found}
     end.
@@ -183,10 +185,9 @@ on_target(T, Kind, Msg, #st{fails = F, down = D, recovering = Rec, fired = Fired
                     [] -> ok;
                     _ ->
                         %% 文本只在确定要发时格式化
-                        Text = unicode:characters_to_binary(
-                                 io_lib:format("连续失败 ~b 次，最近错误：~ts ~ts",
-                                               [N, Kind, case Msg of undefined -> <<>>; _ -> Msg end])),
-                        [notify(upstream_down, critical, <<"上游故障："/utf8, (target_name(T))/binary>>, Text,
+                        {Title, Text} = copy(lang(), upstream_down,
+                                             [target_name(T), N, Kind, case Msg of undefined -> <<>>; _ -> Msg end]),
+                        [notify(upstream_down, critical, Title, Text,
                                 (target_data(T))#{failures => N, kind => Kind}, Cs)
                          || #lg_alert_rule{channels = Cs} <- Loud]
                 end,
@@ -199,9 +200,12 @@ on_target(T, Kind, Msg, #st{fails = F, down = D, recovering = Rec, fired = Fired
 %% 目标恢复：通知过故障的规则发恢复通知（规则已删除或停用时不发）
 recover(T, #st{down = D} = S) ->
     Recovered = [{R, V} || {{T1, R}, V} <- maps:to_list(D), T1 =:= T],
-    _ = [notify(upstream_down, info, <<"上游已恢复："/utf8, (target_name(T))/binary>>,
-                <<"目标恢复正常响应。"/utf8>>, target_data(T), channels_of(R))
-         || {R, alerted} <- Recovered],
+    _ = case [R || {R, alerted} <- Recovered] of
+            [] -> ok;
+            Rs ->
+                {Title, Text} = copy(lang(), upstream_recovered, [target_name(T)]),
+                [notify(upstream_down, info, Title, Text, target_data(T), channels_of(R)) || R <- Rs]
+        end,
     S#st{down = maps:without([{T, R} || {R, _} <- Recovered], D)}.
 
 on_budget(Scope, Period, Spent, Max, #st{fired = Fired} = S) when Max > 0 ->
@@ -209,12 +213,12 @@ on_budget(Scope, Period, Spent, Max, #st{fired = Fired} = S) when Max > 0 ->
     PStart = lg_budget:period_start(Period, lg_time:now_ms()),
     Hit = [R || #lg_alert_rule{id = Id, threshold = Th} = R <- lg_alerts:rules(budget),
                 Pct >= Th, not maps:is_key({budget, Scope, PStart, Id}, Fired)],
-    _ = [notify(budget, case Pct >= 100 of true -> critical; false -> warning end,
-                <<"预算告警："/utf8, (scope_name(Scope))/binary>>,
-                unicode:characters_to_binary(io_lib:format("本~ts已用 $~.4f / $~.2f（~.1f%），达到阈值 ~p%",
-                                               [period_name(Period), float(Spent), float(Max), Pct, Th])),
-                #{scope => scope_json(Scope), period => Period, spent_usd => Spent, max_usd => Max},
-                [C || C <- Cs])
+    _ = [begin
+             L = lang(),
+             {Title, Text} = copy(L, budget, [scope_name(L, Scope), Period, float(Spent), float(Max), Pct, Th]),
+             notify(budget, case Pct >= 100 of true -> critical; false -> warning end, Title, Text,
+                    #{scope => scope_json(Scope), period => Period, spent_usd => Spent, max_usd => Max}, Cs)
+         end
          || #lg_alert_rule{threshold = Th, channels = Cs} <- Hit],
     Now = lg_time:now_ms(),
     S#st{fired = maps:merge(Fired, maps:from_list([{{budget, Scope, PStart, Id}, Now}
@@ -229,12 +233,12 @@ on_plan(CredId, Name, #{windows := Ws}, #st{fired = Fired, plan = P} = S) ->
     Hit = [{R, W} || #lg_alert_rule{id = Id, threshold = Th} = R <- Rules,
                      #{name := WN, used_pct := U, resets_at := At} = W <- Ws,
                      U >= Th, not maps:is_key({plan, CredId, WN, At, Id}, Fired)],
-    _ = [notify(plan_quota, case U >= 100 of true -> critical; false -> warning end,
-                <<"套餐额度"/utf8, (case U >= 100 of true -> <<"用尽："/utf8>>; false -> <<"告警："/utf8>> end)/binary,
-                  Name/binary>>,
-                unicode:characters_to_binary(io_lib:format("~ts 窗口已用 ~p%（阈值 ~p%），~ts 重置",
-                                               [WN, U, Th, fmt_time(At)])),
-                #{credential => CredId, window => WN, used_pct => U, resets_at => At}, Cs)
+    _ = [begin
+             L = lang(),
+             {Title, Text} = copy(L, plan_quota, [Name, WN, U, Th, fmt_time(L, At)]),
+             notify(plan_quota, case U >= 100 of true -> critical; false -> warning end, Title, Text,
+                    #{credential => CredId, window => WN, used_pct => U, resets_at => At}, Cs)
+         end
          || {#lg_alert_rule{threshold = Th, channels = Cs}, #{name := WN, used_pct := U, resets_at := At}} <- Hit],
     P1 = maps:merge(P, maps:from_list([{{CredId, WN, Id}, true}
                                        || {#lg_alert_rule{id = Id}, #{name := WN}} <- Hit])),
@@ -242,8 +246,10 @@ on_plan(CredId, Name, #{windows := Ws}, #st{fired = Fired, plan = P} = S) ->
     Recovered = [{K, R} || {CId, WN, Id} = K <- maps:keys(P1), CId =:= CredId,
                            #lg_alert_rule{id = Id1, threshold = Th} = R <- Rules, Id1 =:= Id,
                            [U || #{name := WN1, used_pct := U} <- Ws, WN1 =:= WN, U < Th] =/= []],
-    _ = [notify(plan_quota, info, <<"套餐额度已恢复："/utf8, Name/binary>>,
-                <<WN/binary, " 窗口已重置"/utf8>>, #{credential => CredId, window => WN}, Cs)
+    _ = [begin
+             {Title, Text} = copy(lang(), plan_recovered, [Name, WN]),
+             notify(plan_quota, info, Title, Text, #{credential => CredId, window => WN}, Cs)
+         end
          || {{_, WN, _}, #lg_alert_rule{channels = Cs}} <- Recovered],
     S#st{fired = maps:merge(Fired, maps:from_list([{{plan, CredId, WN, At, Id}, Now}
                                                    || {#lg_alert_rule{id = Id}, #{name := WN, resets_at := At}} <- Hit])),
@@ -259,16 +265,19 @@ on_balance(CredId, Name, #{amount := A, currency := Cur, alert_below := Below}, 
     case A < Below of
         true ->
             New = [R || #lg_alert_rule{id = Id} = R <- Rules, not maps:is_key({CredId, Id}, Low)],
-            _ = [notify(balance_low, case A =< 0 of true -> critical; false -> warning end,
-                        <<"余额不足："/utf8, Name/binary>>,
-                        unicode:characters_to_binary(io_lib:format("当前余额 ~ts，低于告警线 ~p", [Amount(), Below])),
-                        #{credential => CredId, amount => A, currency => Cur, alert_below => Below}, Cs)
+            _ = [begin
+                     {Title, Text} = copy(lang(), balance_low, [Name, Amount(), Below]),
+                     notify(balance_low, case A =< 0 of true -> critical; false -> warning end, Title, Text,
+                            #{credential => CredId, amount => A, currency => Cur, alert_below => Below}, Cs)
+                 end
                  || #lg_alert_rule{channels = Cs} <- New],
             S#st{low = maps:merge(Low, maps:from_list([{{CredId, Id}, true} || #lg_alert_rule{id = Id} <- New]))};
         false ->
             Recovered = [R || #lg_alert_rule{id = Id} = R <- Rules, maps:is_key({CredId, Id}, Low)],
-            _ = [notify(balance_low, info, <<"余额已恢复："/utf8, Name/binary>>,
-                        <<"当前余额 "/utf8, (Amount())/binary>>, #{credential => CredId, amount => A, currency => Cur}, Cs)
+            _ = [begin
+                     {Title, Text} = copy(lang(), balance_recovered, [Name, Amount()]),
+                     notify(balance_low, info, Title, Text, #{credential => CredId, amount => A, currency => Cur}, Cs)
+                 end
                  || #lg_alert_rule{channels = Cs} <- Recovered],
             S#st{low = maps:without([{CredId, Id} || #lg_alert_rule{id = Id} <- Recovered], Low)}
     end;
@@ -277,11 +286,14 @@ on_balance(_CredId, _Name, _Status, S) ->
 
 on_login_brute_force(Username, PeerIp, Failures, S) ->
     Peer = unicode:characters_to_binary(inet:ntoa(PeerIp)),
-    Text = unicode:characters_to_binary(
-             io_lib:format("来源 ~ts 的账号 ~ts 连续失败 ~b 次，已进入临时冷却。", [Peer, Username, Failures])),
-    _ = [notify(login_brute_force, warning, <<"控制台登录疑似爆破"/utf8>>, Text,
-                #{username => Username, peer => Peer, failures => Failures}, Cs)
-         || #lg_alert_rule{channels = Cs} <- lg_alerts:rules(login_brute_force)],
+    _ = case lg_alerts:rules(login_brute_force) of
+            [] -> ok;
+            Rules ->
+                {Title, Text} = copy(lang(), login_brute_force, [Peer, Username, Failures]),
+                [notify(login_brute_force, warning, Title, Text,
+                        #{username => Username, peer => Peer, failures => Failures}, Cs)
+                 || #lg_alert_rule{channels = Cs} <- Rules]
+        end,
     S.
 
 check_catalog(#st{catalog_at = Last, fired = Fired} = S) ->
@@ -291,7 +303,8 @@ check_catalog(#st{catalog_at = Last, fired = Fired} = S) ->
             Now = lg_time:now_ms(),
             case Now - maps:get(catalog, Fired, 0) >= Silence of
                 true ->
-                    _ = [notify(catalog_sync_failed, warning, <<"模型目录同步失败"/utf8>>,
+                    {Title, _} = copy(lang(), catalog_sync_failed, []),
+                    _ = [notify(catalog_sync_failed, warning, Title,
                                 maps:get(error, V, <<>>), #{source => maps:get(source, V, null)}, Cs)
                          || #lg_alert_rule{channels = Cs} <- lg_alerts:rules(catalog_sync_failed)],
                     S#st{catalog_at = At, fired = Fired#{catalog => Now}};
@@ -369,8 +382,71 @@ deliver(#lg_channel{id = Id, name = N} = C, Msg, Tries) ->
     end.
 
 %%====================================================================
-%% 文案
+%% 文案（alert_language：zh | en）
 %%====================================================================
+
+%% @doc 通知文案语言：运行参数 alert_language 以 en 开头为英文，其余（缺省 zh）为中文。
+-spec lang() -> zh | en.
+lang() ->
+    case lg_config:get(alert_language) of
+        <<"en", _/binary>> -> en;
+        "en" ++ _ -> en;
+        _ -> zh
+    end.
+
+%% @doc 各事件的 {标题, 正文}。
+-spec copy(zh | en, atom(), list()) -> {binary(), binary()}.
+copy(zh, test, []) ->
+    {<<"测试消息"/utf8>>, <<"LiteGate 告警渠道配置正确。"/utf8>>};
+copy(en, test, []) ->
+    {<<"Test message">>, <<"LiteGate alert channel is configured correctly.">>};
+copy(zh, upstream_down, [Name, N, Kind, Msg]) ->
+    {<<"上游故障："/utf8, Name/binary>>, fmt("连续失败 ~b 次，最近错误：~ts ~ts", [N, Kind, Msg])};
+copy(en, upstream_down, [Name, N, Kind, Msg]) ->
+    {<<"Upstream down: ", Name/binary>>,
+     fmt("~b consecutive failure~ts, last error: ~ts ~ts", [N, plural(N), Kind, Msg])};
+copy(zh, upstream_recovered, [Name]) ->
+    {<<"上游已恢复："/utf8, Name/binary>>, <<"目标恢复正常响应。"/utf8>>};
+copy(en, upstream_recovered, [Name]) ->
+    {<<"Upstream recovered: ", Name/binary>>, <<"The target is responding normally again.">>};
+copy(zh, budget, [Scope, Period, Spent, Max, Pct, Th]) ->
+    {<<"预算告警："/utf8, Scope/binary>>,
+     fmt("本~ts已用 $~.4f / $~.2f（~.1f%），达到阈值 ~p%", [period_name(zh, Period), Spent, Max, Pct, Th])};
+copy(en, budget, [Scope, Period, Spent, Max, Pct, Th]) ->
+    {<<"Budget alert: ", Scope/binary>>,
+     fmt("~ts: $~.4f / $~.2f used (~.1f%), reached the ~p% threshold", [period_name(en, Period), Spent, Max, Pct, Th])};
+copy(zh, plan_quota, [Name, WN, U, Th, At]) ->
+    {<<"套餐额度"/utf8, (case U >= 100 of true -> <<"用尽："/utf8>>; false -> <<"告警："/utf8>> end)/binary, Name/binary>>,
+     fmt("~ts 窗口已用 ~p%（阈值 ~p%），~ts 重置", [WN, U, Th, At])};
+copy(en, plan_quota, [Name, WN, U, Th, At]) ->
+    {<<(case U >= 100 of true -> <<"Plan quota exhausted: ">>; false -> <<"Plan quota alert: ">> end)/binary, Name/binary>>,
+     fmt("~ts window ~p% used (threshold ~p%), resets ~ts", [WN, U, Th, At])};
+copy(zh, plan_recovered, [Name, WN]) ->
+    {<<"套餐额度已恢复："/utf8, Name/binary>>, <<WN/binary, " 窗口已重置"/utf8>>};
+copy(en, plan_recovered, [Name, WN]) ->
+    {<<"Plan quota recovered: ", Name/binary>>, <<WN/binary, " window has reset">>};
+copy(zh, balance_low, [Name, Amount, Below]) ->
+    {<<"余额不足："/utf8, Name/binary>>, fmt("当前余额 ~ts，低于告警线 ~p", [Amount, Below])};
+copy(en, balance_low, [Name, Amount, Below]) ->
+    {<<"Low balance: ", Name/binary>>, fmt("Current balance ~ts, below the alert threshold ~p", [Amount, Below])};
+copy(zh, balance_recovered, [Name, Amount]) ->
+    {<<"余额已恢复："/utf8, Name/binary>>, <<"当前余额 "/utf8, Amount/binary>>};
+copy(en, balance_recovered, [Name, Amount]) ->
+    {<<"Balance recovered: ", Name/binary>>, <<"Current balance ", Amount/binary>>};
+copy(zh, login_brute_force, [Peer, User, N]) ->
+    {<<"控制台登录疑似爆破"/utf8>>, fmt("来源 ~ts 的账号 ~ts 连续失败 ~b 次，已进入临时冷却。", [Peer, User, N])};
+copy(en, login_brute_force, [Peer, User, N]) ->
+    {<<"Possible console login brute force">>,
+     fmt("Account ~ts from ~ts failed ~b time~ts in a row and is temporarily locked out.", [User, Peer, N, plural(N)])};
+copy(zh, catalog_sync_failed, []) ->
+    {<<"模型目录同步失败"/utf8>>, <<>>};
+copy(en, catalog_sync_failed, []) ->
+    {<<"Model catalog sync failed">>, <<>>}.
+
+fmt(F, Args) -> unicode:characters_to_binary(io_lib:format(F, Args)).
+
+plural(1) -> "";
+plural(_) -> "s".
 
 target_name({C, M}) ->
     Name = case lg_credentials:get(C) of
@@ -381,26 +457,38 @@ target_name({C, M}) ->
 
 target_data({C, M}) -> #{credential => C, upstream_model => M}.
 
-scope_name({key, Id}) ->
+scope_name(_, {key, Id}) ->
     case lg_api_keys:get(Id) of
         {ok, #lg_api_key{name = N}} -> <<"API Key "/utf8, N/binary>>;
         _ -> <<"API Key ", Id/binary>>
     end;
-scope_name({tag, T}) ->
-    <<"标签 "/utf8, T/binary>>;
-scope_name({user, Id}) ->
-    case lg_users:get(Id) of
-        {ok, #lg_user{username = N}} -> <<"用户 "/utf8, N/binary>>;
-        _ -> <<"用户 "/utf8, Id/binary>>
+scope_name(zh, {tag, T}) -> <<"标签 "/utf8, T/binary>>;
+scope_name(en, {tag, T}) -> <<"tag ", T/binary>>;
+scope_name(L, {user, Id}) ->
+    N = case lg_users:get(Id) of
+            {ok, #lg_user{username = U}} -> U;
+            _ -> Id
+        end,
+    case L of
+        zh -> <<"用户 "/utf8, N/binary>>;
+        en -> <<"user ", N/binary>>
     end.
 
 scope_json({T, Id}) -> #{type => T, id => Id}.
 
-period_name(day) -> <<"日"/utf8>>;
-period_name(week) -> <<"周"/utf8>>;
-period_name(month) -> <<"月"/utf8>>.
+period_name(zh, day) -> <<"日"/utf8>>;
+period_name(zh, week) -> <<"周"/utf8>>;
+period_name(zh, month) -> <<"月"/utf8>>;
+period_name(en, day) -> <<"Today">>;
+period_name(en, week) -> <<"This week">>;
+period_name(en, month) -> <<"This month">>.
 
-fmt_time(null) -> <<"未知时间"/utf8>>;
-fmt_time(Ms) ->
+fmt_time(zh, null) -> <<"未知时间"/utf8>>;
+fmt_time(en, null) -> <<"at an unknown time">>;
+fmt_time(L, Ms) ->
     {{Y, Mo, D}, {H, Mi, _}} = calendar:system_time_to_local_time(Ms div 1000, second),
-    iolist_to_binary(io_lib:format("~4..0b-~2..0b-~2..0b ~2..0b:~2..0b", [Y, Mo, D, H, Mi])).
+    T = iolist_to_binary(io_lib:format("~4..0b-~2..0b-~2..0b ~2..0b:~2..0b", [Y, Mo, D, H, Mi])),
+    case L of
+        zh -> T;
+        en -> <<"at ", T/binary>>
+    end.

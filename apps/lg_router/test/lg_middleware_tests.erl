@@ -45,6 +45,16 @@ builtins(_) ->
     Names = [N || #{impl := N} <- Info],
     [?assert(lists:member(N, Names)) || N <- [<<"model_map">>, <<"system_prompt">>, <<"word_guard">>, <<"param_override">>, <<"remote">>]],
     ?assert(lists:all(fun(#{source := S}) -> S =:= builtin end, Info)),
+    %% 英文说明：describe/0 的 en 键合并进来；两种语言的结果都不带 en 键
+    InfoEn = lg_middleware:impl_info(en),
+    ?assertEqual(Names, [N || #{impl := N} <- InfoEn]),
+    ?assertMatch([#{title := <<"Model name mapping">>}], [I || #{impl := <<"model_map">>} = I <- InfoEn]),
+    ?assertMatch([#{title := <<"模型名映射"/utf8>>}], [I || #{impl := <<"model_map">>} = I <- Info]),
+    ?assertMatch([#{options_example := #{<<"text">> := <<"Always answer in English.">>}}],
+                 [I || #{impl := <<"system_prompt">>} = I <- InfoEn]),
+    ?assertNot(lists:any(fun(I) -> maps:is_key(en, I) end, Info ++ InfoEn)),
+    [?assertEqual(nomatch, re:run([T, D], "[\\x{4e00}-\\x{9fff}]", [unicode]))
+     || #{title := T, description := D, source := builtin} <- InfoEn],
     %% hooks/1：word_guard 的 mask 模式只启用事件与响应点位
     {ok, _} = lg_middlewares:create(#{<<"name">> => <<"wg">>, <<"impl">> => <<"word_guard">>,
                                       <<"options">> => #{<<"words">> => [<<"x">>], <<"mode">> => <<"mask">>}}),
@@ -79,7 +89,11 @@ plugins(#{plugins := Dir}) ->
     St = maps:from_list([{M, R} || #{module := M, result := R} <- Files]),
     ?assertMatch(#{status := loaded, impl := <<"plug">>}, maps:get(mw_plug, St)),
     ?assertMatch(#{status := library}, maps:get(mw_lib, St)),
-    ?assertMatch(#{status := error}, maps:get(lg_mw_model_map_dup, St)),
+    ?assertMatch(#{status := error, message := <<"实现名与内置实现冲突：model_map"/utf8>>}, maps:get(lg_mw_model_map_dup, St)),
+    ?assertNot(maps:is_key(message_en, maps:get(lg_mw_model_map_dup, St))),
+    #{files := FilesEn} = lg_middleware:rescan(en),
+    ?assertMatch([#{status := error, message := <<"Implementation name conflicts with a built-in implementation: model_map">>}],
+                 [R || #{module := lg_mw_model_map_dup, result := R} <- FilesEn]),
     ?assertMatch([#{source := plugin}], [I || #{impl := <<"plug">>} = I <- lg_middleware:impl_info()]),
     %% 内置的 model_map 没被覆盖
     ?assertEqual(lg_mw_model_map, maps:get(<<"model_map">>, lg_middleware:impls())),

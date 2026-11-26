@@ -1,5 +1,7 @@
 # 架构
 
+[English](en/architecture.md) | 简体中文
+
 ## 总览
 
 LiteGate 是基于 Erlang/OTP 的 LLM API 网关。它对外提供 OpenAI 与 Anthropic 兼容接口，

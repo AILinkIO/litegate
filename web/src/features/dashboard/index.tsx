@@ -16,6 +16,7 @@ import { PageHeader, SectionTitle } from '@/components/page'
 import { BalanceCard, PlanCard } from '@/components/quota-cards'
 import { ErrorAlert } from '@/components/query-state'
 import { Stat, StatRow } from '@/components/stat-card'
+import { t } from '@/i18n'
 
 export function Dashboard() {
   const { user } = useAuth()
@@ -26,33 +27,33 @@ export function Dashboard() {
 
   return (
     <>
-      <PageHeader title='仪表盘' subtitle={isAdmin ? '全部流量，最近 24 小时' : '你的 API Key 的流量，最近 24 小时'} />
+      <PageHeader title={t('仪表盘')} subtitle={isAdmin ? t('全部流量，最近 24 小时') : t('你的 API Key 的流量，最近 24 小时')} />
       {overview.error && <ErrorAlert message={overview.error.message} />}
       {data?.counts && <Onboarding counts={data.counts} />}
       {data ? <Summary u={data.usage_24h} /> : <Skeleton className='h-[106px] rounded-xl' />}
       <div className='mt-4 grid gap-4 lg:grid-cols-2'>
-        <ChartCard title='最近 24 小时' loading={!data}>
+        <ChartCard title={t('最近 24 小时')} loading={!data}>
           {data && <HourlyChart rows={data.hourly} />}
         </ChartCard>
-        <ChartCard title='最近 14 天 Token' loading={!data}>
+        <ChartCard title={t('最近 14 天 Token')} loading={!data}>
           {data && <DailyChart rows={data.hourly} />}
         </ChartCard>
       </div>
       {isAdmin && creds.data && <Quotas creds={creds.data} />}
       {data?.counts && (
         <>
-          <SectionTitle>配置</SectionTitle>
+          <SectionTitle>{t('配置')}</SectionTitle>
           <StatRow>
-            <Stat value={fmtInt(data.counts.routes)} label='路由' />
-            <Stat value={fmtInt(data.counts.credentials)} label='上游凭证' />
+            <Stat value={fmtInt(data.counts.routes)} label={t('路由')} />
+            <Stat value={fmtInt(data.counts.credentials)} label={t('上游凭证')} />
             <Stat value={fmtInt(data.counts.keys)} label='API Key' />
-            <Stat value={fmtInt(data.counts.catalog_models)} label='目录模型'
-              sub={data.catalog_sync?.at ? `同步于 ${fmtTime(data.catalog_sync.at)}` : '尚未同步'} />
+            <Stat value={fmtInt(data.counts.catalog_models)} label={t('目录模型')}
+              sub={data.catalog_sync?.at ? t('同步于 {time}', { time: fmtTime(data.catalog_sync.at) }) : t('尚未同步')} />
           </StatRow>
           {data.catalog_sync?.status === 'error' && (
             <Alert className='mt-3 border-warning/40 text-warning'>
               <AlertTriangle />
-              <AlertDescription className='text-warning'>最近一次模型目录同步失败：{data.catalog_sync.error}</AlertDescription>
+              <AlertDescription className='text-warning'>{t('最近一次模型目录同步失败：{error}', { error: data.catalog_sync.error ?? '' })}</AlertDescription>
             </Alert>
           )}
         </>
@@ -66,15 +67,15 @@ function Summary({ u }: { u: Partial<UsageRow> }) {
   const hit = input > 0 ? Math.round(((u.cache_read ?? 0) / input) * 100) : null
   return (
     <StatRow>
-      <Stat value={fmtInt(u.requests)} label='请求' tone={u.errors ? undefined : undefined}
-        sub={u.errors ? <span className='text-destructive'>{fmtInt(u.errors)} 次失败</span> : '没有失败'} />
-      <Stat value={fmtTokens(input + (u.output ?? 0))} label='Token' sub={`输入 ${fmtTokens(input)} · 输出 ${fmtTokens(u.output)}`} />
-      <Stat value={hit === null ? '—' : `${hit}%`} label='缓存命中' sub={`读取 ${fmtTokens(u.cache_read)}`} />
-      <Stat value={fmtCost(u.cost)} label='费用'
-        sub={u.plan_requests ? `${fmtInt(u.plan_requests)} 次走套餐${u.plan_usd ? `，等价 ${fmtCost(u.plan_usd)}` : ''}`
-          : u.cache_hits ? `响应缓存节省 ${fmtCost(u.saved_usd)}` : '按量计费'} />
-      <Stat value={u.p50_ms != null ? fmtMs(u.p50_ms) : '—'} label='延迟 P50'
-        sub={u.p95_ms != null ? `P95 ${fmtMs(u.p95_ms)}${u.ttft_p50_ms != null ? ` · 首 token ${fmtMs(u.ttft_p50_ms)}` : ''}` : undefined} />
+      <Stat value={fmtInt(u.requests)} label={t('请求')} tone={u.errors ? undefined : undefined}
+        sub={u.errors ? <span className='text-destructive'>{t('{n} 次失败', { n: fmtInt(u.errors) })}</span> : t('没有失败')} />
+      <Stat value={fmtTokens(input + (u.output ?? 0))} label='Token' sub={t('输入 {input} · 输出 {output}', { input: fmtTokens(input), output: fmtTokens(u.output) })} />
+      <Stat value={hit === null ? '—' : `${hit}%`} label={t('缓存命中')} sub={t('读取 {n}', { n: fmtTokens(u.cache_read) })} />
+      <Stat value={fmtCost(u.cost)} label={t('费用')}
+        sub={u.plan_requests ? (u.plan_usd ? t('{n} 次走套餐，等价 {usd}', { n: fmtInt(u.plan_requests), usd: fmtCost(u.plan_usd) }) : t('{n} 次走套餐', { n: fmtInt(u.plan_requests) }))
+          : u.cache_hits ? t('响应缓存节省 {usd}', { usd: fmtCost(u.saved_usd) }) : t('按量计费')} />
+      <Stat value={u.p50_ms != null ? fmtMs(u.p50_ms) : '—'} label={t('延迟 P50')}
+        sub={u.p95_ms != null ? `P95 ${fmtMs(u.p95_ms)}${u.ttft_p50_ms != null ? t(' · 首 token {ms}', { ms: fmtMs(u.ttft_p50_ms) }) : ''}` : undefined} />
     </StatRow>
   )
 }
@@ -100,23 +101,23 @@ function HourlyChart({ rows }: { rows: UsageRow[] }) {
       return { h, r: byHour.get(h) }
     })
   }, [rows])
-  const option = useCallback((t: ChartTheme) => ({
-    ...baseOption(t),
-    ...axes(t, hours.map(({ h }) => `${new Date(h).getHours()}:00`)),
+  const option = useCallback((th: ChartTheme) => ({
+    ...baseOption(th),
+    ...axes(th, hours.map(({ h }) => `${new Date(h).getHours()}:00`)),
     yAxis: [
-      { ...axes(t, []).yAxis, minInterval: 1 },
-      { type: 'value', splitLine: { show: false }, axisLabel: { color: t.muted, formatter: (v: number) => fmtMs(v) } },
+      { ...axes(th, []).yAxis, minInterval: 1 },
+      { type: 'value', splitLine: { show: false }, axisLabel: { color: th.muted, formatter: (v: number) => fmtMs(v) } },
     ],
     series: [
-      { name: '成功', type: 'bar', stack: 'r', barMaxWidth: 14, itemStyle: { color: t.palette[0] },
+      { name: t('成功'), type: 'bar', stack: 'r', barMaxWidth: 14, itemStyle: { color: th.palette[0] },
         data: hours.map(({ r }) => (r ? r.requests - r.errors : 0)) },
-      { name: '失败', type: 'bar', stack: 'r', barMaxWidth: 14, itemStyle: { color: t.danger, borderRadius: [3, 3, 0, 0] },
+      { name: t('失败'), type: 'bar', stack: 'r', barMaxWidth: 14, itemStyle: { color: th.danger, borderRadius: [3, 3, 0, 0] },
         data: hours.map(({ r }) => r?.errors ?? 0) },
-      { name: 'P95 延迟', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 5, connectNulls: true,
-        lineStyle: { width: 1.5, color: t.palette[3] }, itemStyle: { color: t.palette[3] },
+      { name: t('P95 延迟'), type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 5, connectNulls: true,
+        lineStyle: { width: 1.5, color: th.palette[3] }, itemStyle: { color: th.palette[3] },
         data: hours.map(({ r }) => r?.p95_ms ?? null) },
     ],
-    tooltip: { ...(baseOption(t).tooltip as object), valueFormatter: undefined },
+    tooltip: { ...(baseOption(th).tooltip as object), valueFormatter: undefined },
   }), [hours])
   return <EChart option={option} height={220} />
 }
@@ -132,16 +133,16 @@ function DailyChart({ rows }: { rows: UsageRow[] }) {
       return { d, r: byDay.get(d.getTime()) }
     })
   }, [rows])
-  const option = useCallback((t: ChartTheme) => ({
-    ...baseOption(t),
-    ...axes(t, days.map(({ d }) => `${d.getMonth() + 1}/${d.getDate()}`), (v) => fmtTokens(v)),
-    tooltip: { ...(baseOption(t).tooltip as object), valueFormatter: (v: number) => fmtTokens(v) },
+  const option = useCallback((th: ChartTheme) => ({
+    ...baseOption(th),
+    ...axes(th, days.map(({ d }) => `${d.getMonth() + 1}/${d.getDate()}`), (v) => fmtTokens(v)),
+    tooltip: { ...(baseOption(th).tooltip as object), valueFormatter: (v: number) => fmtTokens(v) },
     series: [
-      { name: '输入', type: 'bar', stack: 't', barMaxWidth: 22, itemStyle: { color: t.palette[0] },
+      { name: t('输入'), type: 'bar', stack: 't', barMaxWidth: 22, itemStyle: { color: th.palette[0] },
         data: days.map(({ r }) => (r ? r.input + r.cache_write : 0)) },
-      { name: '缓存读', type: 'bar', stack: 't', barMaxWidth: 22, itemStyle: { color: t.palette[0], opacity: 0.35 },
+      { name: t('缓存读'), type: 'bar', stack: 't', barMaxWidth: 22, itemStyle: { color: th.palette[0], opacity: 0.35 },
         data: days.map(({ r }) => r?.cache_read ?? 0) },
-      { name: '输出', type: 'bar', stack: 't', barMaxWidth: 22, itemStyle: { color: t.palette[1], borderRadius: [3, 3, 0, 0] },
+      { name: t('输出'), type: 'bar', stack: 't', barMaxWidth: 22, itemStyle: { color: th.palette[1], borderRadius: [3, 3, 0, 0] },
         data: days.map(({ r }) => r?.output ?? 0) },
     ],
   }), [days])
@@ -156,7 +157,7 @@ function Quotas({ creds }: { creds: Credential[] }) {
   return (
     <>
       <SectionTitle actions={<Button asChild variant='ghost' size='sm' className='text-muted-foreground'>
-        <Link to='/credentials'>管理凭证 <ArrowRight /></Link></Button>}>套餐与余额</SectionTitle>
+        <Link to='/credentials'>{t('管理凭证')} <ArrowRight /></Link></Button>}>{t('套餐与余额')}</SectionTitle>
       <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-3'>
         {plans.map((c) => <PlanCard key={c.id} cred={c} status={c.plan_status!} />)}
         {balances.map((c) => <BalanceCard key={c.id} cred={c} status={c.balance_status!} />)}
@@ -168,17 +169,17 @@ function Quotas({ creds }: { creds: Credential[] }) {
 /** 冷启动引导：同步目录 → 添加凭证 → 创建路由 → 创建 Key */
 function Onboarding({ counts }: { counts: NonNullable<Overview['counts']> }) {
   const steps = [
-    { label: '同步模型目录', done: counts.catalog_models > 0, to: '/models' },
-    { label: '添加上游凭证', done: counts.credentials > 0, to: '/credentials' },
-    { label: '创建路由', done: counts.routes > 0, to: '/routes' },
-    { label: '创建 API Key', done: counts.keys > 0, to: '/keys' },
+    { label: t('同步模型目录'), done: counts.catalog_models > 0, to: '/models' },
+    { label: t('添加上游凭证'), done: counts.credentials > 0, to: '/credentials' },
+    { label: t('创建路由'), done: counts.routes > 0, to: '/routes' },
+    { label: t('创建 API Key'), done: counts.keys > 0, to: '/keys' },
   ]
   const next = steps.find((s) => !s.done)
   if (!next) return null
   return (
     <Card className='mb-4'>
       <CardContent className='flex flex-wrap items-center gap-x-6 gap-y-3'>
-        <span className='font-semibold'>开始使用</span>
+        <span className='font-semibold'>{t('开始使用')}</span>
         <ol className='flex flex-wrap items-center gap-x-5 gap-y-2'>
           {steps.map((s, i) => (
             <li key={s.label} className={cn('flex items-center gap-2 text-sm', s.done ? 'text-muted-foreground' : s === next ? 'font-medium' : 'text-muted-foreground')}>
@@ -190,7 +191,7 @@ function Onboarding({ counts }: { counts: NonNullable<Overview['counts']> }) {
             </li>
           ))}
         </ol>
-        <Button asChild size='sm' className='ms-auto'><Link to={next.to}>下一步：{next.label} <ArrowRight /></Link></Button>
+        <Button asChild size='sm' className='ms-auto'><Link to={next.to}>{t('下一步：{step}', { step: next.label })} <ArrowRight /></Link></Button>
       </CardContent>
     </Card>
   )

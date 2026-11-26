@@ -18,6 +18,7 @@ import {
   Users,
   Waypoints,
 } from 'lucide-react'
+import { tk } from '@/i18n'
 
 export interface NavItem {
   title: string
@@ -32,43 +33,43 @@ export interface NavGroup {
   items: NavItem[]
 }
 
-/** 侧栏与命令面板共用的导航 */
+/** 侧栏与命令面板共用的导航（title 是 tk() 标记的原文，渲染时 t(title)） */
 export const navGroups: NavGroup[] = [
   {
-    title: '概览',
+    title: tk('概览'),
     items: [
-      { title: '仪表盘', url: '/', icon: LayoutDashboard },
-      { title: '路由视图', url: '/live', icon: Waypoints, admin: true },
+      { title: tk('仪表盘'), url: '/', icon: LayoutDashboard },
+      { title: tk('路由视图'), url: '/live', icon: Waypoints, admin: true },
       { title: 'Playground', url: '/playground', icon: MessagesSquare, admin: true },
     ],
   },
   {
-    title: '网关配置',
+    title: tk('网关配置'),
     items: [
-      { title: '模型目录', url: '/models', icon: Network, admin: true },
-      { title: '上游凭证', url: '/credentials', icon: Server, admin: true },
-      { title: '路由表', url: '/routes', icon: Route, admin: true },
-      { title: '上游健康', url: '/health', icon: HeartPulse, admin: true },
-      { title: '中间件', url: '/middleware', icon: Puzzle, admin: true },
-      { title: '告警', url: '/alerts', icon: BellRing, admin: true },
+      { title: tk('模型目录'), url: '/models', icon: Network, admin: true },
+      { title: tk('上游凭证'), url: '/credentials', icon: Server, admin: true },
+      { title: tk('路由表'), url: '/routes', icon: Route, admin: true },
+      { title: tk('上游健康'), url: '/health', icon: HeartPulse, admin: true },
+      { title: tk('中间件'), url: '/middleware', icon: Puzzle, admin: true },
+      { title: tk('告警'), url: '/alerts', icon: BellRing, admin: true },
       { title: 'API Key', url: '/keys', icon: KeyRound },
-      { title: '接入指南', url: '/integrations', icon: PlugZap },
+      { title: tk('接入指南'), url: '/integrations', icon: PlugZap },
     ],
   },
   {
-    title: '数据',
+    title: tk('数据'),
     items: [
-      { title: '请求日志', url: '/logs', icon: ScrollText },
-      { title: '会话', url: '/sessions', icon: Activity },
-      { title: '用量', url: '/usage', icon: ChartNoAxesCombined },
+      { title: tk('请求日志'), url: '/logs', icon: ScrollText },
+      { title: tk('会话'), url: '/sessions', icon: Activity },
+      { title: tk('用量'), url: '/usage', icon: ChartNoAxesCombined },
     ],
   },
   {
-    title: '系统',
+    title: tk('系统'),
     items: [
-      { title: '用户', url: '/users', icon: Users, admin: true, auth: true },
-      { title: '运行参数', url: '/settings', icon: SlidersHorizontal, admin: true },
-      { title: '接口文档', url: '/docs', icon: BookOpen },
+      { title: tk('用户'), url: '/users', icon: Users, admin: true, auth: true },
+      { title: tk('运行参数'), url: '/settings', icon: SlidersHorizontal, admin: true },
+      { title: tk('接口文档'), url: '/docs', icon: BookOpen },
     ],
   },
 ]
